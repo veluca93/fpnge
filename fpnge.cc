@@ -344,7 +344,7 @@ ProcessRow(size_t bytes_per_line_buf, const unsigned char *mask,
       }
     }
 
-    bool continue_rle = i != 0;
+    bool continue_rle = i != 0 && bytes_per_32 >= 3;
     for (size_t ii = 0; ii < 32; ii++) {
       continue_rle &=
           mask[i + ii] == 0 || predicted_data[ii] == last_predicted_data[ii];
@@ -366,7 +366,7 @@ ProcessRow(size_t bytes_per_line_buf, const unsigned char *mask,
 template <typename CB> void ForAllRLESymbols(size_t length, CB &&cb) {
   if (length == 0)
     return;
-  assert(length >= 8);
+  assert(length >= 3);
   constexpr uint32_t kLZ77LengthNbits[259] = {
       0,  0,  0,  10, 10, 10, 10, 11, 11, 11, 11, 12, 12, 12, 12, 12, 12, 12,
       12, 13, 13, 13, 13, 13, 13, 13, 13, 13, 13, 13, 13, 13, 13, 13, 13, 14,
@@ -485,8 +485,8 @@ void TryPredictor(size_t bytes_per_line_buf, const unsigned char *mask,
 }
 
 // Either bits_hi is empty, or bits_lo contains exactly 6 (kMidNbits - 4) bits.
-void WriteBits(__m256i nbits, __m256i bits_lo, __m256i bits_hi,
-               BitWriter *writer) {
+__attribute__((always_inline)) void
+WriteBits(__m256i nbits, __m256i bits_lo, __m256i bits_hi, BitWriter *writer) {
 
   // Merge bits_lo and bits_hi in 16-bit "bits".
   auto nbits0 = _mm256_unpacklo_epi8(nbits, _mm256_setzero_si256());
@@ -550,9 +550,24 @@ void WriteBits(__m256i nbits, __m256i bits_lo, __m256i bits_hi,
 
   constexpr uint8_t kPerm[8] = {0, 1, 4, 5, 2, 3, 6, 7};
 
+  // call to WriteBits manually inlined: compiler assumes aliasing may happen.
+  uint64_t buffer = writer->buffer;
+  uint64_t bits_in_buffer = writer->bits_in_buffer;
+  uint64_t bytes_written = writer->bytes_written;
   for (size_t ii = 0; ii < 8; ii++) {
-    writer->Write(nbits_a[kPerm[ii]], bits_a[kPerm[ii]]);
+    uint64_t bits = bits_a[kPerm[ii]];
+    uint64_t count = nbits_a[kPerm[ii]];
+    buffer |= bits << bits_in_buffer;
+    bits_in_buffer += count;
+    memcpy(writer->data + bytes_written, &buffer, 8);
+    size_t bytes_in_buffer = bits_in_buffer / 8;
+    bits_in_buffer -= bytes_in_buffer * 8;
+    buffer >>= bytes_in_buffer * 8;
+    bytes_written += bytes_in_buffer;
   }
+  writer->buffer = buffer;
+  writer->bits_in_buffer = bits_in_buffer;
+  writer->bytes_written = bytes_written;
 }
 
 void EncodeOneRow(size_t bytes_per_line_buf,
