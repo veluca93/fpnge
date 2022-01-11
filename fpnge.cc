@@ -808,6 +808,19 @@ size_t FPNGEEncode(size_t bytes_per_channel, size_t num_channels,
       aligned_adler_mul_buf_ptr[4 * i + 2] = 1;
       aligned_adler_mul_buf_ptr[4 * i + 3] = 0;
     }
+  } else if (bytes_per_channel == 1 && num_channels == 4) {
+    for (size_t i = 0; i < width; i++) {
+      aligned_mask_buf_ptr[4 * i + 0] = 0xFF;
+      aligned_mask_buf_ptr[4 * i + 1] = 0xFF;
+      aligned_mask_buf_ptr[4 * i + 2] = 0xFF;
+      aligned_mask_buf_ptr[4 * i + 3] = 0xFF;
+    }
+    for (size_t i = 0; i < width; i++) {
+      aligned_adler_mul_buf_ptr[4 * i + 0] = 1;
+      aligned_adler_mul_buf_ptr[4 * i + 1] = 1;
+      aligned_adler_mul_buf_ptr[4 * i + 2] = 1;
+      aligned_adler_mul_buf_ptr[4 * i + 3] = 1;
+    }
   } else {
     assert(false);
   }
@@ -859,6 +872,13 @@ size_t FPNGEEncode(size_t bytes_per_channel, size_t num_channels,
         current_row_buf[4 * i + 1] = current_row_in[3 * i + 1];
         current_row_buf[4 * i + 2] = current_row_in[3 * i + 2];
         current_row_buf[4 * i + 3] = 0;
+      }
+    } else if (bytes_per_channel == 1 && num_channels == 4) {
+      for (size_t i = 0; i < width; i++) {
+        current_row_buf[4 * i + 0] = current_row_in[4 * i + 0];
+        current_row_buf[4 * i + 1] = current_row_in[4 * i + 1];
+        current_row_buf[4 * i + 2] = current_row_in[4 * i + 2];
+        current_row_buf[4 * i + 3] = current_row_in[4 * i + 3];
       }
     } else {
       assert(false);
