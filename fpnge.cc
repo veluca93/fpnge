@@ -579,8 +579,6 @@ void EncodeOneRow(size_t bytes_per_line_buf,
 #ifndef FPNGE_FIXED_PREDICTOR
   uint8_t predictor;
   size_t best_cost = ~0U;
-  TryPredictor<0>(bytes_per_line_buf, mask, current_row_buf, top_buf, left_buf,
-                  topleft_buf, best_cost, predictor, dist_nbits);
   TryPredictor<1>(bytes_per_line_buf, mask, current_row_buf, top_buf, left_buf,
                   topleft_buf, best_cost, predictor, dist_nbits);
   TryPredictor<2>(bytes_per_line_buf, mask, current_row_buf, top_buf, left_buf,
