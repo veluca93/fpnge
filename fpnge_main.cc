@@ -45,12 +45,41 @@ int main(int argc, char **argv) {
     exit(1);
   }
 
-  unsigned char *png;
-  unsigned width, height;
+  LodePNGState state;
+  lodepng_state_init(&state);
 
-  // RGB only for now.
+  bool has_alpha = false;
+
+  unsigned width, height;
   unsigned error =
-      lodepng_decode24(&png, &width, &height, in_data.data(), in_data.size());
+      lodepng_inspect(&width, &height, &state, in_data.data(), in_data.size());
+  if (error) {
+    fprintf(stderr, "lodepng error %u: %s\n", error, lodepng_error_text(error));
+    return 1;
+  }
+
+  if (state.info_png.color.colortype == LCT_RGBA ||
+      state.info_png.color.colortype == LCT_GREY_ALPHA) {
+    has_alpha = true;
+  }
+
+  if (lodepng_chunk_find_const(in_data.data() + 8,
+                               in_data.data() + in_data.size(), "tRNS")) {
+    has_alpha = true;
+  }
+
+  size_t num_c = has_alpha ? 4 : 3;
+
+  unsigned char *png;
+
+  // RGB(A) only for now.
+  if (has_alpha) {
+    error =
+        lodepng_decode32(&png, &width, &height, in_data.data(), in_data.size());
+  } else {
+    error =
+        lodepng_decode24(&png, &width, &height, in_data.data(), in_data.size());
+  }
 
   if (error) {
     fprintf(stderr, "lodepng error %u: %s\n", error, lodepng_error_text(error));
@@ -64,7 +93,8 @@ int main(int argc, char **argv) {
     auto start = std::chrono::high_resolution_clock::now();
     for (size_t _ = 0; _ < num_reps; _++) {
       free(encoded);
-      encoded_size = FPNGEEncode(1, 3, png, width, width * 3, height, &encoded);
+      encoded_size =
+          FPNGEEncode(1, num_c, png, width, width * num_c, height, &encoded);
     }
     auto stop = std::chrono::high_resolution_clock::now();
     float us =
@@ -76,7 +106,8 @@ int main(int argc, char **argv) {
     fprintf(stderr, "%10.3f bits/pixel\n",
             encoded_size * 8.0 / float(width) / float(height));
   } else {
-    encoded_size = FPNGEEncode(1, 3, png, width, width * 3, height, &encoded);
+    encoded_size =
+        FPNGEEncode(1, num_c, png, width, width * num_c, height, &encoded);
   }
 
   FILE *o = fopen(out, "wb");
