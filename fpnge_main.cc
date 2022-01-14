@@ -24,7 +24,7 @@
 
 int main(int argc, char **argv) {
   if (argc < 3) {
-    fprintf(stderr, "Usage: %s in.png out.jxl [num_reps]\n", argv[0]);
+    fprintf(stderr, "Usage: %s in.png out.png [num_reps]\n", argv[0]);
     return 1;
   }
 
