@@ -91,28 +91,12 @@ struct BitWriter {
   uint64_t buffer = 0;
 };
 
-void WriteHuffmanCode(uint32_t num_channels, uint32_t &dist_nbits,
-                      uint32_t &dist_bits, BitWriter *writer) {
-  uint32_t dist = 0;
-  if (num_channels == 1) {
-    dist = 5;
-    dist_nbits = 2;
-    dist_bits = 2;
-  } else if (num_channels == 2) {
-    dist = 7;
-    dist_nbits = 3;
-    dist_bits = 6;
-  } else if (num_channels == 3) {
-    dist = 8;
-    dist_nbits = 4;
-    dist_bits = 14;
-  } else if (num_channels == 4) {
-    dist = 9;
-    dist_nbits = 4;
-    dist_bits = 14;
-  } else {
-    assert(false);
-  }
+void WriteHuffmanCode(uint32_t &dist_nbits, uint32_t &dist_bits,
+                      BitWriter *writer) {
+  uint32_t dist = 9;
+  dist_nbits = 4;
+  dist_bits = 14;
+
   constexpr uint8_t kCodeLengthNbits[] = {
       5, 7, 7, 6, 6, 0, 6, 6, 2, 0, 1, 3, 6, 0, 0, 0, 0, 0, 0,
   };
@@ -769,7 +753,7 @@ size_t FPNGEEncode(size_t bytes_per_channel, size_t num_channels,
   // allows for padding, and for extra initial space for the "left" pixel for
   // predictors.
   size_t bytes_per_line_buf =
-      (bytes_per_channel * 4 * width + 4 * bytes_per_channel + 31) / 32 * 32;
+      (bytes_per_line + 4 * bytes_per_channel + 31) / 32 * 32;
 
   // Extra space for alignment purposes.
   std::vector<unsigned char> buf(bytes_per_line_buf * 2 + 31 +
@@ -793,36 +777,9 @@ size_t FPNGEEncode(size_t bytes_per_channel, size_t num_channels,
           : 0;
 
   // Initialize the mask & adler multipliers data.
-  if (bytes_per_channel == 1 && num_channels == 3) {
-    for (size_t i = 0; i < width; i++) {
-      aligned_mask_buf_ptr[4 * i + 0] = 0xFF;
-      aligned_mask_buf_ptr[4 * i + 1] = 0xFF;
-      aligned_mask_buf_ptr[4 * i + 2] = 0xFF;
-      aligned_mask_buf_ptr[4 * i + 3] = 0x00;
-    }
-    for (size_t i = 0; i < width; i++) {
-      aligned_adler_mul_buf_ptr[4 * i + 0] = 1;
-      aligned_adler_mul_buf_ptr[4 * i + 1] = 1;
-      aligned_adler_mul_buf_ptr[4 * i + 2] = 1;
-      aligned_adler_mul_buf_ptr[4 * i + 3] = 0;
-    }
-  } else if (bytes_per_channel == 1 && num_channels == 4) {
-    for (size_t i = 0; i < width; i++) {
-      aligned_mask_buf_ptr[4 * i + 0] = 0xFF;
-      aligned_mask_buf_ptr[4 * i + 1] = 0xFF;
-      aligned_mask_buf_ptr[4 * i + 2] = 0xFF;
-      aligned_mask_buf_ptr[4 * i + 3] = 0xFF;
-    }
-    for (size_t i = 0; i < width; i++) {
-      aligned_adler_mul_buf_ptr[4 * i + 0] = 1;
-      aligned_adler_mul_buf_ptr[4 * i + 1] = 1;
-      aligned_adler_mul_buf_ptr[4 * i + 2] = 1;
-      aligned_adler_mul_buf_ptr[4 * i + 3] = 1;
-    }
-  } else {
-    assert(false);
-  }
-  for (size_t i = 0; i < 4 * bytes_per_channel * width; i += 32) {
+  memset(aligned_mask_buf_ptr, 0xFF, bytes_per_line);
+  memset(aligned_adler_mul_buf_ptr, 0x01, bytes_per_line);
+  for (size_t i = 0; i < bytes_per_line; i += 32) {
     for (size_t ii = 31; ii-- > 0;) {
       aligned_adler_mul_buf_ptr[i + ii] +=
           aligned_adler_mul_buf_ptr[i + ii + 1];
@@ -850,7 +807,7 @@ size_t FPNGEEncode(size_t bytes_per_channel, size_t num_channels,
   writer.Write(3, 0b101);
   uint32_t dist_nbits;
   uint32_t dist_bits;
-  WriteHuffmanCode(num_channels, dist_nbits, dist_bits, &writer);
+  WriteHuffmanCode(dist_nbits, dist_bits, &writer);
 
   uint32_t crc = ~0U;
   uint32_t s1 = 1;
@@ -861,26 +818,12 @@ size_t FPNGEEncode(size_t bytes_per_channel, size_t num_channels,
         aligned_buf_ptr + (y % 2 ? bytes_per_line_buf : 0);
     const unsigned char *top_buf =
         aligned_buf_ptr + ((y + 1) % 2 ? bytes_per_line_buf : 0);
-    const unsigned char *left_buf = current_row_buf - bytes_per_channel * 4;
-    const unsigned char *topleft_buf = top_buf - bytes_per_channel * 4;
+    const unsigned char *left_buf =
+        current_row_buf - bytes_per_channel * num_channels;
+    const unsigned char *topleft_buf =
+        top_buf - bytes_per_channel * num_channels;
 
-    if (bytes_per_channel == 1 && num_channels == 3) {
-      for (size_t i = 0; i < width; i++) {
-        current_row_buf[4 * i + 0] = current_row_in[3 * i + 0];
-        current_row_buf[4 * i + 1] = current_row_in[3 * i + 1];
-        current_row_buf[4 * i + 2] = current_row_in[3 * i + 2];
-        current_row_buf[4 * i + 3] = 0;
-      }
-    } else if (bytes_per_channel == 1 && num_channels == 4) {
-      for (size_t i = 0; i < width; i++) {
-        current_row_buf[4 * i + 0] = current_row_in[4 * i + 0];
-        current_row_buf[4 * i + 1] = current_row_in[4 * i + 1];
-        current_row_buf[4 * i + 2] = current_row_in[4 * i + 2];
-        current_row_buf[4 * i + 3] = current_row_in[4 * i + 3];
-      }
-    } else {
-      assert(false);
-    }
+    memcpy(current_row_buf, current_row_in, bytes_per_line);
 
     EncodeOneRow(bytes_per_line_buf, aligned_adler_mul_buf_ptr,
                  aligned_mask_buf_ptr, current_row_buf, top_buf, left_buf,
