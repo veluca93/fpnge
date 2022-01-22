@@ -45,27 +45,93 @@ constexpr uint8_t kNbits[286] = {
     10, 10, 10, 10, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11,
     11, 11, 11, 11, 11, 11, 11, 11, 12, 8};
 
-alignas(32) constexpr uint8_t kFirst16Nbits[16] = {2, 3, 4, 6, 7, 8, 8, 8,
-                                                   8, 8, 8, 8, 8, 8, 8, 8};
-alignas(32) constexpr uint8_t kFirst16Bits[16] = {
-    0x00, 0x02, 0x01, 0x05, 0x15, 0x35, 0xb5, 0x75,
-    0xf5, 0x0d, 0x8d, 0x4d, 0xcd, 0x2d, 0xad, 0x6d,
-};
-
-alignas(32) constexpr uint8_t kLast16Nbits[16] = {8, 8, 8, 8, 8, 8, 8, 8,
-                                                  8, 8, 8, 8, 7, 6, 4, 3};
-alignas(32) constexpr uint8_t kLast16Bits[16] = {
-    0xed, 0x1d, 0x9d, 0x5d, 0xdd, 0x3d, 0xbd, 0x7d,
-    0xfd, 0x03, 0x83, 0x43, 0x55, 0x25, 0x09, 0x06};
-
-alignas(32) constexpr uint8_t kMidNbits = 10;
-alignas(32) constexpr uint8_t kMidLowBits[16] = {
-    0,    0x23, 0x13, 0x33, 0x0b, 0x2b, 0x1b, 0x3b,
-    0x07, 0x27, 0x17, 0x37, 0x0f, 0x2f, 0x1f, 0};
-
 alignas(32) constexpr uint8_t kBitReverseNibbleLookup[16] = {
     0b0000, 0b1000, 0b0100, 0b1100, 0b0010, 0b1010, 0b0110, 0b1110,
     0b0001, 0b1001, 0b0101, 0b1101, 0b0011, 0b1011, 0b0111, 0b1111,
+};
+
+static constexpr uint8_t kLZ77NBits[29] = {0, 0, 0, 0, 0, 0, 0, 0, 1, 1,
+                                           1, 1, 2, 2, 2, 2, 3, 3, 3, 3,
+                                           4, 4, 4, 4, 5, 5, 5, 5, 0};
+
+static constexpr uint16_t kLZ77Base[29] = {
+    3,  4,  5,  6,  7,  8,  9,  10, 11,  13,  15,  17,  19,  23, 27,
+    31, 35, 43, 51, 59, 67, 83, 99, 115, 131, 163, 195, 227, 258};
+
+uint16_t BitReverse(size_t nbits, uint16_t bits) {
+  uint16_t rev16 = (kBitReverseNibbleLookup[bits & 0xF] << 12) |
+                   (kBitReverseNibbleLookup[(bits >> 4) & 0xF] << 8) |
+                   (kBitReverseNibbleLookup[(bits >> 8) & 0xF] << 4) |
+                   (kBitReverseNibbleLookup[bits >> 12]);
+  return rev16 >> (16 - nbits);
+}
+
+struct HuffmanTable {
+  uint8_t nbits[286];
+  uint16_t end_bits;
+
+  alignas(32) uint8_t first16_nbits[16];
+  alignas(32) uint8_t first16_bits[16];
+
+  alignas(32) uint8_t last16_nbits[16];
+  alignas(32) uint8_t last16_bits[16];
+
+  uint8_t mid_nbits;
+  alignas(32) uint8_t mid_lowbits[16];
+
+  uint32_t lz77_length_nbits[259] = {};
+  uint32_t lz77_length_bits[259] = {};
+  uint32_t lz77_length_sym[259] = {};
+
+  void ComputeCanonicalCode(const uint8_t *nbits, uint16_t *bits) {
+    uint8_t code_length_counts[16] = {};
+    for (size_t i = 0; i < 286; i++) {
+      code_length_counts[nbits[i]]++;
+    }
+    uint16_t next_code[16] = {};
+    uint16_t code = 0;
+    for (size_t i = 1; i < 16; i++) {
+      code = (code + code_length_counts[i - 1]) << 1;
+      next_code[i] = code;
+    }
+    for (size_t i = 0; i < 286; i++) {
+      bits[i] = BitReverse(nbits[i], next_code[nbits[i]]++);
+    }
+  }
+
+  HuffmanTable() {
+    memcpy(nbits, kNbits, sizeof(nbits));
+    uint16_t bits[286];
+    ComputeCanonicalCode(nbits, bits);
+    for (size_t i = 0; i < 16; i++) {
+      first16_nbits[i] = nbits[i];
+      first16_bits[i] = bits[i];
+    }
+    for (size_t i = 0; i < 16; i++) {
+      last16_nbits[i] = nbits[240 + i];
+      last16_bits[i] = bits[240 + i];
+    }
+    mid_nbits = nbits[16];
+    mid_lowbits[0] = mid_lowbits[15] = 0;
+    for (size_t i = 16; i < 240; i += 16) {
+      mid_lowbits[i / 16] = bits[i] & ((1 << (mid_nbits - 4)) - 1);
+    }
+    for (size_t i = 16; i < 240; i++) {
+      assert(nbits[i] == mid_nbits);
+      assert((uint32_t(mid_lowbits[i / 16]) |
+              (kBitReverseNibbleLookup[i % 16] << (mid_nbits - 4))) == bits[i]);
+    }
+    end_bits = bits[256];
+    // Construct lz77 lookup tables.
+    for (size_t i = 0; i < 29; i++) {
+      for (size_t j = 0; j < (1 << kLZ77NBits[i]); j++) {
+        lz77_length_nbits[kLZ77Base[i] + j] = nbits[257 + i] + kLZ77NBits[i];
+        lz77_length_sym[kLZ77Base[i] + j] = 257 + i;
+        lz77_length_bits[kLZ77Base[i] + j] =
+            bits[257 + i] | (j << nbits[257 + i]);
+      }
+    }
+  }
 };
 
 struct BitWriter {
@@ -92,17 +158,13 @@ struct BitWriter {
 };
 
 void WriteHuffmanCode(uint32_t &dist_nbits, uint32_t &dist_bits,
-                      BitWriter *writer) {
+                      const HuffmanTable &table, BitWriter *writer) {
   uint32_t dist = 9;
   dist_nbits = 4;
   dist_bits = 14;
 
   constexpr uint8_t kCodeLengthNbits[] = {
-      5, 7, 7, 6, 6, 0, 6, 6, 2, 0, 1, 3, 6, 0, 0, 0, 0, 0, 0,
-  };
-  constexpr uint8_t kCodeLengthBits[] = {
-      0x7, 0x3f, 0x7f, 0x17, 0x37, 0x0, 0xf, 0x2f, 0x1, 0x0,
-      0x0, 0x3,  0x1f, 0x0,  0x0,  0x0, 0x0, 0x0,  0x0,
+      4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 0, 0, 0,
   };
   constexpr uint8_t kCodeLengthOrder[] = {
       16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2, 14, 1, 15,
@@ -115,12 +177,12 @@ void WriteHuffmanCode(uint32_t &dist_nbits, uint32_t &dist_bits,
   }
 
   for (size_t i = 0; i < 286; i++) {
-    writer->Write(kCodeLengthNbits[kNbits[i]], kCodeLengthBits[kNbits[i]]);
+    writer->Write(4, kBitReverseNibbleLookup[table.nbits[i]]);
   }
   for (size_t i = 0; i < dist; i++) {
-    writer->Write(kCodeLengthNbits[0], kCodeLengthBits[0]);
+    writer->Write(4, 0);
   }
-  writer->Write(kCodeLengthNbits[1], kCodeLengthBits[1]);
+  writer->Write(4, 0b1000);
 }
 
 constexpr unsigned kCrcTable[] = {
@@ -351,67 +413,17 @@ template <typename CB> void ForAllRLESymbols(size_t length, CB &&cb) {
   if (length == 0)
     return;
   assert(length >= 3);
-  constexpr uint32_t kLZ77LengthNbits[259] = {
-      0,  0,  0,  10, 10, 10, 10, 11, 11, 11, 11, 12, 12, 12, 12, 12, 12, 12,
-      12, 13, 13, 13, 13, 13, 13, 13, 13, 13, 13, 13, 13, 13, 13, 13, 13, 14,
-      14, 14, 14, 14, 14, 14, 14, 14, 14, 14, 14, 14, 14, 14, 14, 14, 14, 14,
-      14, 14, 14, 14, 14, 14, 14, 14, 14, 14, 14, 14, 14, 15, 15, 15, 15, 15,
-      15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15,
-      15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15,
-      15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15,
-      15, 15, 15, 15, 15, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16,
-      16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16,
-      16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16,
-      16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16,
-      16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16,
-      16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 17, 17, 17, 17, 17, 17, 17,
-      17, 17, 17, 17, 17, 17, 17, 17, 17, 17, 17, 17, 17, 17, 17, 17, 17, 17,
-      17, 17, 17, 17, 17, 17, 8};
-  constexpr uint32_t kLZ77LengthBits[259] = {
-      0,       0,       0,       0x3f,    0x23f,   0x13f,   0x33f,   0xbf,
-      0x4bf,   0x2bf,   0x6bf,   0x1bf,   0x9bf,   0x5bf,   0xdbf,   0x3bf,
-      0xbbf,   0x7bf,   0xfbf,   0x7f,    0x87f,   0x107f,  0x187f,  0x47f,
-      0xc7f,   0x147f,  0x1c7f,  0x27f,   0xa7f,   0x127f,  0x1a7f,  0x67f,
-      0xe7f,   0x167f,  0x1e7f,  0x17f,   0x97f,   0x117f,  0x197f,  0x217f,
-      0x297f,  0x317f,  0x397f,  0x57f,   0xd7f,   0x157f,  0x1d7f,  0x257f,
-      0x2d7f,  0x357f,  0x3d7f,  0x37f,   0xb7f,   0x137f,  0x1b7f,  0x237f,
-      0x2b7f,  0x337f,  0x3b7f,  0x77f,   0xf7f,   0x177f,  0x1f7f,  0x277f,
-      0x2f7f,  0x377f,  0x3f7f,  0xff,    0x8ff,   0x10ff,  0x18ff,  0x20ff,
-      0x28ff,  0x30ff,  0x38ff,  0x40ff,  0x48ff,  0x50ff,  0x58ff,  0x60ff,
-      0x68ff,  0x70ff,  0x78ff,  0x4ff,   0xcff,   0x14ff,  0x1cff,  0x24ff,
-      0x2cff,  0x34ff,  0x3cff,  0x44ff,  0x4cff,  0x54ff,  0x5cff,  0x64ff,
-      0x6cff,  0x74ff,  0x7cff,  0x2ff,   0xaff,   0x12ff,  0x1aff,  0x22ff,
-      0x2aff,  0x32ff,  0x3aff,  0x42ff,  0x4aff,  0x52ff,  0x5aff,  0x62ff,
-      0x6aff,  0x72ff,  0x7aff,  0x6ff,   0xeff,   0x16ff,  0x1eff,  0x26ff,
-      0x2eff,  0x36ff,  0x3eff,  0x46ff,  0x4eff,  0x56ff,  0x5eff,  0x66ff,
-      0x6eff,  0x76ff,  0x7eff,  0x1ff,   0x9ff,   0x11ff,  0x19ff,  0x21ff,
-      0x29ff,  0x31ff,  0x39ff,  0x41ff,  0x49ff,  0x51ff,  0x59ff,  0x61ff,
-      0x69ff,  0x71ff,  0x79ff,  0x81ff,  0x89ff,  0x91ff,  0x99ff,  0xa1ff,
-      0xa9ff,  0xb1ff,  0xb9ff,  0xc1ff,  0xc9ff,  0xd1ff,  0xd9ff,  0xe1ff,
-      0xe9ff,  0xf1ff,  0xf9ff,  0x5ff,   0xdff,   0x15ff,  0x1dff,  0x25ff,
-      0x2dff,  0x35ff,  0x3dff,  0x45ff,  0x4dff,  0x55ff,  0x5dff,  0x65ff,
-      0x6dff,  0x75ff,  0x7dff,  0x85ff,  0x8dff,  0x95ff,  0x9dff,  0xa5ff,
-      0xadff,  0xb5ff,  0xbdff,  0xc5ff,  0xcdff,  0xd5ff,  0xddff,  0xe5ff,
-      0xedff,  0xf5ff,  0xfdff,  0x3ff,   0xbff,   0x13ff,  0x1bff,  0x23ff,
-      0x2bff,  0x33ff,  0x3bff,  0x43ff,  0x4bff,  0x53ff,  0x5bff,  0x63ff,
-      0x6bff,  0x73ff,  0x7bff,  0x83ff,  0x8bff,  0x93ff,  0x9bff,  0xa3ff,
-      0xabff,  0xb3ff,  0xbbff,  0xc3ff,  0xcbff,  0xd3ff,  0xdbff,  0xe3ff,
-      0xebff,  0xf3ff,  0xfbff,  0xfff,   0x1fff,  0x2fff,  0x3fff,  0x4fff,
-      0x5fff,  0x6fff,  0x7fff,  0x8fff,  0x9fff,  0xafff,  0xbfff,  0xcfff,
-      0xdfff,  0xefff,  0xffff,  0x10fff, 0x11fff, 0x12fff, 0x13fff, 0x14fff,
-      0x15fff, 0x16fff, 0x17fff, 0x18fff, 0x19fff, 0x1afff, 0x1bfff, 0x1cfff,
-      0x1dfff, 0x1efff, 0xc3};
 
   if (length % 258 == 1 || length % 258 == 2) {
     length -= 3;
-    cb(kLZ77LengthNbits[3], kLZ77LengthBits[3]);
+    cb(3);
   }
   while (length >= 258) {
-    cb(kLZ77LengthNbits[258], kLZ77LengthBits[258]);
     length -= 258;
+    cb(258);
   }
   if (length) {
-    cb(kLZ77LengthNbits[length], kLZ77LengthBits[length]);
+    cb(length);
   }
 }
 
@@ -419,8 +431,8 @@ template <size_t pred>
 void TryPredictor(size_t bytes_per_line_buf, const unsigned char *mask,
                   unsigned char *current_row_buf, const unsigned char *top_buf,
                   const unsigned char *left_buf,
-                  const unsigned char *topleft_buf, size_t &best_cost,
-                  uint8_t &predictor, size_t dist_nbits) {
+                  const unsigned char *topleft_buf, const HuffmanTable &table,
+                  size_t &best_cost, uint8_t &predictor, size_t dist_nbits) {
   size_t cost_rle = 0;
   __m256i cost_direct = _mm256_setzero_si256();
   auto cost_chunk_cb = [&](const uint8_t *predicted_data, const uint8_t *mask)
@@ -431,14 +443,16 @@ void TryPredictor(size_t bytes_per_line_buf, const unsigned char *mask,
     auto data_for_lut = _mm256_and_si256(_mm256_set1_epi8(0xF), bytes);
     auto data_for_blend = _mm256_and_si256(_mm256_set1_epi8(0xF0), bytes);
 
-    auto nbits_low16 = _mm256_shuffle_epi8(
-        _mm256_broadcastsi128_si256(_mm_load_si128((__m128i *)kFirst16Nbits)),
-        data_for_lut);
-    auto nbits_hi16 = _mm256_shuffle_epi8(
-        _mm256_broadcastsi128_si256(_mm_load_si128((__m128i *)kLast16Nbits)),
-        data_for_lut);
+    auto nbits_low16 =
+        _mm256_shuffle_epi8(_mm256_broadcastsi128_si256(
+                                _mm_load_si128((__m128i *)table.first16_nbits)),
+                            data_for_lut);
+    auto nbits_hi16 =
+        _mm256_shuffle_epi8(_mm256_broadcastsi128_si256(
+                                _mm_load_si128((__m128i *)table.last16_nbits)),
+                            data_for_lut);
 
-    auto nbits = _mm256_set1_epi8(kMidNbits);
+    auto nbits = _mm256_set1_epi8(table.mid_nbits);
 
     nbits = _mm256_blendv_epi8(
         nbits, nbits_hi16,
@@ -457,8 +471,8 @@ void TryPredictor(size_t bytes_per_line_buf, const unsigned char *mask,
       bytes_per_line_buf, mask, current_row_buf, top_buf, left_buf, topleft_buf,
       cost_chunk_cb, [](size_t, const uint8_t *, const uint8_t *, size_t) {},
       [&](size_t run) {
-        ForAllRLESymbols(run, [&](size_t nbits, size_t bits) {
-          cost_rle += dist_nbits + nbits;
+        ForAllRLESymbols(run, [&](size_t len) {
+          cost_rle += dist_nbits + table.lz77_length_nbits[len];
         });
       });
   size_t cost = cost_rle + hadd(cost_direct);
@@ -468,9 +482,11 @@ void TryPredictor(size_t bytes_per_line_buf, const unsigned char *mask,
   }
 }
 
-// Either bits_hi is empty, or bits_lo contains exactly 6 (kMidNbits - 4) bits.
-__attribute__((always_inline)) void
-WriteBits(__m256i nbits, __m256i bits_lo, __m256i bits_hi, BitWriter *writer) {
+// Either bits_hi is empty, or bits_lo contains exactly mid_lo_nbits bits.
+__attribute__((always_inline)) void WriteBits(__m256i nbits, __m256i bits_lo,
+                                              __m256i bits_hi,
+                                              size_t mid_lo_nbits,
+                                              BitWriter *writer) {
 
   // Merge bits_lo and bits_hi in 16-bit "bits".
   auto nbits0 = _mm256_unpacklo_epi8(nbits, _mm256_setzero_si256());
@@ -481,10 +497,10 @@ WriteBits(__m256i nbits, __m256i bits_lo, __m256i bits_hi, BitWriter *writer) {
   auto bits_hi1 = _mm256_unpackhi_epi8(bits_hi, _mm256_setzero_si256());
 
   auto bits0 = _mm256_or_si256(
-      _mm256_mullo_epi16(_mm256_set1_epi16(1 << (kMidNbits - 4)), bits_hi0),
+      _mm256_mullo_epi16(_mm256_set1_epi16(1 << mid_lo_nbits), bits_hi0),
       bits_lo0);
   auto bits1 = _mm256_or_si256(
-      _mm256_mullo_epi16(_mm256_set1_epi16(1 << (kMidNbits - 4)), bits_hi1),
+      _mm256_mullo_epi16(_mm256_set1_epi16(1 << mid_lo_nbits), bits_hi1),
       bits_lo1);
 
   // 16 -> 32
@@ -558,24 +574,25 @@ void EncodeOneRow(size_t bytes_per_line_buf,
                   const uint8_t *aligned_adler_mul_buf_ptr,
                   const unsigned char *mask, unsigned char *current_row_buf,
                   const unsigned char *top_buf, const unsigned char *left_buf,
-                  const unsigned char *topleft_buf, uint32_t &s1, uint32_t &s2,
-                  size_t dist_nbits, size_t dist_bits, BitWriter *writer) {
+                  const unsigned char *topleft_buf, const HuffmanTable &table,
+                  uint32_t &s1, uint32_t &s2, size_t dist_nbits,
+                  size_t dist_bits, BitWriter *writer) {
 #ifndef FPNGE_FIXED_PREDICTOR
   uint8_t predictor;
   size_t best_cost = ~0U;
   TryPredictor<1>(bytes_per_line_buf, mask, current_row_buf, top_buf, left_buf,
-                  topleft_buf, best_cost, predictor, dist_nbits);
+                  topleft_buf, table, best_cost, predictor, dist_nbits);
   TryPredictor<2>(bytes_per_line_buf, mask, current_row_buf, top_buf, left_buf,
-                  topleft_buf, best_cost, predictor, dist_nbits);
+                  topleft_buf, table, best_cost, predictor, dist_nbits);
   TryPredictor<3>(bytes_per_line_buf, mask, current_row_buf, top_buf, left_buf,
-                  topleft_buf, best_cost, predictor, dist_nbits);
+                  topleft_buf, table, best_cost, predictor, dist_nbits);
   TryPredictor<4>(bytes_per_line_buf, mask, current_row_buf, top_buf, left_buf,
-                  topleft_buf, best_cost, predictor, dist_nbits);
+                  topleft_buf, table, best_cost, predictor, dist_nbits);
 #else
   uint8_t predictor = FPNGE_FIXED_PREDICTOR;
 #endif
 
-  writer->Write(kFirst16Nbits[predictor], kFirst16Bits[predictor]);
+  writer->Write(table.first16_nbits[predictor], table.first16_bits[predictor]);
   UpdateAdler32(s1, s2, predictor);
 
   auto adler_accum_s1 = _mm256_castsi128_si256(_mm_cvtsi32_si128(s1));
@@ -606,29 +623,34 @@ void EncodeOneRow(size_t bytes_per_line_buf,
     auto data_for_midlut =
         _mm256_and_si256(_mm256_set1_epi8(0xF), _mm256_srai_epi16(bytes, 4));
 
-    auto nbits_low16 = _mm256_shuffle_epi8(
-        _mm256_broadcastsi128_si256(_mm_load_si128((__m128i *)kFirst16Nbits)),
-        data_for_lut);
-    auto nbits_hi16 = _mm256_shuffle_epi8(
-        _mm256_broadcastsi128_si256(_mm_load_si128((__m128i *)kLast16Nbits)),
-        data_for_lut);
+    auto nbits_low16 =
+        _mm256_shuffle_epi8(_mm256_broadcastsi128_si256(
+                                _mm_load_si128((__m128i *)table.first16_nbits)),
+                            data_for_lut);
+    auto nbits_hi16 =
+        _mm256_shuffle_epi8(_mm256_broadcastsi128_si256(
+                                _mm_load_si128((__m128i *)table.last16_nbits)),
+                            data_for_lut);
 
-    auto bits_low16 = _mm256_shuffle_epi8(
-        _mm256_broadcastsi128_si256(_mm_load_si128((__m128i *)kFirst16Bits)),
-        data_for_lut);
-    auto bits_hi16 = _mm256_shuffle_epi8(
-        _mm256_broadcastsi128_si256(_mm_load_si128((__m128i *)kLast16Bits)),
-        data_for_lut);
-    auto bits_mid_lo = _mm256_shuffle_epi8(
-        _mm256_broadcastsi128_si256(_mm_load_si128((__m128i *)kMidLowBits)),
-        data_for_midlut);
+    auto bits_low16 =
+        _mm256_shuffle_epi8(_mm256_broadcastsi128_si256(
+                                _mm_load_si128((__m128i *)table.first16_bits)),
+                            data_for_lut);
+    auto bits_hi16 =
+        _mm256_shuffle_epi8(_mm256_broadcastsi128_si256(
+                                _mm_load_si128((__m128i *)table.last16_bits)),
+                            data_for_lut);
+    auto bits_mid_lo =
+        _mm256_shuffle_epi8(_mm256_broadcastsi128_si256(
+                                _mm_load_si128((__m128i *)table.mid_lowbits)),
+                            data_for_midlut);
 
     auto bits_mid_hi =
         _mm256_shuffle_epi8(_mm256_broadcastsi128_si256(_mm_load_si128(
                                 (__m128i *)kBitReverseNibbleLookup)),
                             data_for_lut);
 
-    auto nbits = _mm256_set1_epi8(kMidNbits);
+    auto nbits = _mm256_set1_epi8(table.mid_nbits);
 
     nbits = _mm256_blendv_epi8(
         nbits, nbits_hi16,
@@ -651,10 +673,11 @@ void EncodeOneRow(size_t bytes_per_line_buf,
     bits_lo = _mm256_and_si256(bits_lo, maskv);
 
     auto bits_hi = _mm256_and_si256(
-        bits_mid_hi, _mm256_cmpeq_epi8(nbits, _mm256_set1_epi8(kMidNbits)));
+        bits_mid_hi,
+        _mm256_cmpeq_epi8(nbits, _mm256_set1_epi8(table.mid_nbits)));
     bits_hi = _mm256_and_si256(bits_hi, maskv);
 
-    WriteBits(nbits, bits_lo, bits_hi, writer);
+    WriteBits(nbits, bits_lo, bits_hi, table.mid_nbits - 4, writer);
   };
 
   auto adler_chunk_cb = [&](size_t bytes_per_32, const uint8_t *predicted_data,
@@ -682,8 +705,8 @@ void EncodeOneRow(size_t bytes_per_line_buf,
   };
 
   auto encode_rle_cb = [&](size_t run) {
-    ForAllRLESymbols(run, [&](size_t nbits, size_t bits) {
-      writer->Write(nbits, bits);
+    ForAllRLESymbols(run, [&](size_t len) {
+      writer->Write(table.lz77_length_nbits[len], table.lz77_length_bits[len]);
       writer->Write(dist_nbits, dist_bits);
     });
   };
@@ -803,11 +826,13 @@ size_t FPNGEEncode(size_t bytes_per_channel, size_t num_channels,
   writer.Write(8, 8);  // deflate with smallest window
   writer.Write(8, 29); // cfm+flg check value
 
+  HuffmanTable huffman_table;
+
   // Single block, dynamic huffman
   writer.Write(3, 0b101);
   uint32_t dist_nbits;
   uint32_t dist_bits;
-  WriteHuffmanCode(dist_nbits, dist_bits, &writer);
+  WriteHuffmanCode(dist_nbits, dist_bits, huffman_table, &writer);
 
   uint32_t crc = ~0U;
   uint32_t s1 = 1;
@@ -827,7 +852,8 @@ size_t FPNGEEncode(size_t bytes_per_channel, size_t num_channels,
 
     EncodeOneRow(bytes_per_line_buf, aligned_adler_mul_buf_ptr,
                  aligned_mask_buf_ptr, current_row_buf, top_buf, left_buf,
-                 topleft_buf, s1, s2, dist_nbits, dist_bits, &writer);
+                 topleft_buf, huffman_table, s1, s2, dist_nbits, dist_bits,
+                 &writer);
 
     size_t bytes = (writer.bytes_written - crc_pos) / 64 * 64;
     crc = update_crc(crc, writer.data + crc_pos, bytes);
@@ -835,7 +861,7 @@ size_t FPNGEEncode(size_t bytes_per_channel, size_t num_channels,
   }
 
   // EOB
-  writer.Write(12, 0x7ff);
+  writer.Write(huffman_table.nbits[256], huffman_table.end_bits);
 
   writer.ZeroPadToByte();
   assert(writer.bits_in_buffer == 0);
