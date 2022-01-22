@@ -12,38 +12,14 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include <algorithm>
 #include <assert.h>
 #include <immintrin.h>
-#include <queue>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-
-constexpr uint8_t kNbits[286] = {
-    // First 16 symbols
-    2, 3, 4, 6, 7, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8,
-    // Intermediate symbols, 16-239. They are clustered together so that they
-    // end up having the same 4 upper bits.
-    10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10,
-    10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10,
-    10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10,
-    10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10,
-    10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10,
-    10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10,
-    10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10,
-    10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10,
-    10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10,
-    10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10,
-    10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10,
-    10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10,
-    // Last 16 literal symbols
-    8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 7, 6, 4, 3,
-    // EOB
-    12,
-    // LZ77 symbols
-    10, 10, 10, 10, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11,
-    11, 11, 11, 11, 11, 11, 11, 11, 12, 8};
+#include <vector>
 
 alignas(32) constexpr uint8_t kBitReverseNibbleLookup[16] = {
     0b0000, 0b1000, 0b0100, 0b1100, 0b0010, 0b1010, 0b0110, 0b1110,
@@ -83,6 +59,131 @@ struct HuffmanTable {
   uint32_t lz77_length_bits[259] = {};
   uint32_t lz77_length_sym[259] = {};
 
+  // Computes nbits[i] for i <= n, subject to min_limit[i] <= nbits[i] <=
+  // max_limit[i], so to minimize sum(nbits[i] * freqs[i]).
+  static void ComputeCodeLengths(uint64_t *freqs, size_t n, uint8_t *min_limit,
+                                 uint8_t *max_limit, uint8_t *nbits) {
+    size_t precision = 0;
+    uint64_t freqsum = 0;
+    for (size_t i = 0; i < n; i++) {
+      assert(freqs[i] != 0);
+      freqsum += freqs[i];
+      if (min_limit[i] < 1)
+        min_limit[i] = 1;
+      assert(min_limit[i] <= max_limit[i]);
+      precision = std::max<size_t>(max_limit[i], precision);
+    }
+    uint64_t infty = freqsum * precision;
+    std::vector<uint64_t> dynp(((1 << precision) + 1) * (n + 1), infty);
+    auto d = [&](size_t sym, size_t off) -> uint64_t & {
+      return dynp[sym * ((1 << precision) + 1) + off];
+    };
+    d(0, 0) = 0;
+    for (size_t sym = 0; sym < n; sym++) {
+      for (size_t bits = min_limit[sym]; bits <= max_limit[sym]; bits++) {
+        size_t off_delta = 1 << (precision - bits);
+        for (size_t off = 0; off + off_delta <= (1 << precision); off++) {
+          d(sym + 1, off + off_delta) = std::min(
+              d(sym, off) + freqs[sym] * bits, d(sym + 1, off + off_delta));
+        }
+      }
+    }
+
+    size_t sym = n;
+    size_t off = 1 << precision;
+
+    while (sym-- > 0) {
+      assert(off > 0);
+      for (size_t bits = min_limit[sym]; bits <= max_limit[sym]; bits++) {
+        size_t off_delta = 1 << (precision - bits);
+        if (off_delta <= off &&
+            d(sym + 1, off) == d(sym, off - off_delta) + freqs[sym] * bits) {
+          off -= off_delta;
+          nbits[sym] = bits;
+          break;
+        }
+      }
+    }
+  }
+
+  void ComputeNBits(const uint64_t *collected_data) {
+    constexpr uint64_t kBaselineData[286] = {
+        113, 54, 28, 18, 12, 9, 7, 6, 5, 4, 3, 3, 2, 2, 2, 2, 1, 1, 1, 1, 1,
+        1,   1,  1,  1,  1,  1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+        1,   1,  1,  1,  1,  1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+        1,   1,  1,  1,  1,  1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+        1,   1,  1,  1,  1,  1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+        1,   1,  1,  1,  1,  1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+        1,   1,  1,  1,  1,  1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+        1,   1,  1,  1,  1,  1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+        1,   1,  1,  1,  1,  1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+        1,   1,  1,  1,  1,  1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+        1,   1,  1,  1,  1,  1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+        1,   1,  1,  1,  1,  1, 1, 1, 1, 2, 2, 2, 2, 2, 3, 3, 4, 5, 6, 7, 9,
+        12,  18, 29, 54, 1,  1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+        1,   1,  1,  1,  1,  1, 1, 1, 1, 1, 1, 1, 1,
+    };
+
+    uint64_t data[286];
+
+    for (size_t i = 0; i < 286; i++) {
+      data[i] = collected_data[i] + kBaselineData[i];
+    }
+
+    // Compute Huffman code length ensuring that all the "fake" symbols for [16,
+    // 240) and [255, 285) have their maximum length.
+    uint64_t collapsed_data[16 + 14 + 16 + 2] = {};
+    uint8_t collapsed_min_limit[16 + 14 + 16 + 2] = {};
+    uint8_t collapsed_max_limit[16 + 14 + 16 + 2];
+    for (size_t i = 0; i < 48; i++) {
+      collapsed_max_limit[i] = 8;
+    }
+    for (size_t i = 0; i < 16; i++) {
+      collapsed_data[i] = data[i];
+    }
+    for (size_t i = 0; i < 14; i++) {
+      collapsed_data[16 + i] = 1;
+      collapsed_min_limit[16 + i] = 8 * 0;
+    }
+    for (size_t j = 0; j < 16; j++) {
+      collapsed_data[16 + 14 + j] += data[240 + j];
+    }
+    collapsed_data[16 + 14 + 16] = 1;
+    collapsed_min_limit[16 + 14 + 16] = 8 * 0;
+    collapsed_data[16 + 14 + 16 + 1] = data[285];
+
+    uint8_t collapsed_nbits[48] = {};
+    ComputeCodeLengths(collapsed_data, 48, collapsed_min_limit,
+                       collapsed_max_limit, collapsed_nbits);
+
+    // Compute "extra" code lengths for symbols >= 256, except 285.
+    uint8_t tail_nbits[29] = {};
+    uint8_t tail_min_limit[29] = {};
+    uint8_t tail_max_limit[29] = {};
+    for (size_t i = 0; i < 29; i++) {
+      tail_min_limit[i] = 4;
+      tail_max_limit[i] = 7;
+    }
+    ComputeCodeLengths(data + 256, 29, tail_min_limit, tail_max_limit,
+                       tail_nbits);
+
+    for (size_t i = 0; i < 16; i++) {
+      nbits[i] = collapsed_nbits[i];
+    }
+    for (size_t i = 0; i < 14; i++) {
+      for (size_t j = 0; j < 16; j++) {
+        nbits[(i + 1) * 16 + j] = collapsed_nbits[16 + i] + 4;
+      }
+    }
+    for (size_t i = 0; i < 16; i++) {
+      nbits[240 + i] = collapsed_nbits[30 + i];
+    }
+    for (size_t i = 0; i < 29; i++) {
+      nbits[256 + i] = collapsed_nbits[46] + tail_nbits[i];
+    }
+    nbits[285] = collapsed_nbits[47];
+  }
+
   void ComputeCanonicalCode(const uint8_t *nbits, uint16_t *bits) {
     uint8_t code_length_counts[16] = {};
     for (size_t i = 0; i < 286; i++) {
@@ -99,8 +200,8 @@ struct HuffmanTable {
     }
   }
 
-  HuffmanTable() {
-    memcpy(nbits, kNbits, sizeof(nbits));
+  HuffmanTable(const uint64_t *collected_data) {
+    ComputeNBits(collected_data);
     uint16_t bits[286];
     ComputeCanonicalCode(nbits, bits);
     for (size_t i = 0; i < 16; i++) {
@@ -731,6 +832,58 @@ void EncodeOneRow(size_t bytes_per_line_buf,
   flush_adler();
 }
 
+void CollectSymbolCounts(
+    size_t bytes_per_line_buf, const uint8_t *aligned_adler_mul_buf_ptr,
+    const unsigned char *mask, unsigned char *current_row_buf,
+    const unsigned char *top_buf, const unsigned char *left_buf,
+    const unsigned char *topleft_buf, uint64_t *symbol_counts) {
+
+  auto encode_chunk_cb = [&](const uint8_t *predicted_data,
+                             const uint8_t *mask) {
+    for (size_t i = 0; i < 32; i++) {
+      symbol_counts[predicted_data[i]] += mask[i] != 0;
+    }
+  };
+
+  auto adler_chunk_cb = [&](size_t, const uint8_t *, const uint8_t *, size_t) {
+  };
+
+  auto encode_rle_cb = [&](size_t run) {
+    constexpr size_t kLZ77Sym[] = {
+        0,   0,   0,   257, 258, 259, 260, 261, 262, 263, 264, 265, 265, 266,
+        266, 267, 267, 268, 268, 269, 269, 269, 269, 270, 270, 270, 270, 271,
+        271, 271, 271, 272, 272, 272, 272, 273, 273, 273, 273, 273, 273, 273,
+        273, 274, 274, 274, 274, 274, 274, 274, 274, 275, 275, 275, 275, 275,
+        275, 275, 275, 276, 276, 276, 276, 276, 276, 276, 276, 277, 277, 277,
+        277, 277, 277, 277, 277, 277, 277, 277, 277, 277, 277, 277, 277, 278,
+        278, 278, 278, 278, 278, 278, 278, 278, 278, 278, 278, 278, 278, 278,
+        278, 279, 279, 279, 279, 279, 279, 279, 279, 279, 279, 279, 279, 279,
+        279, 279, 279, 280, 280, 280, 280, 280, 280, 280, 280, 280, 280, 280,
+        280, 280, 280, 280, 280, 281, 281, 281, 281, 281, 281, 281, 281, 281,
+        281, 281, 281, 281, 281, 281, 281, 281, 281, 281, 281, 281, 281, 281,
+        281, 281, 281, 281, 281, 281, 281, 281, 281, 282, 282, 282, 282, 282,
+        282, 282, 282, 282, 282, 282, 282, 282, 282, 282, 282, 282, 282, 282,
+        282, 282, 282, 282, 282, 282, 282, 282, 282, 282, 282, 282, 282, 283,
+        283, 283, 283, 283, 283, 283, 283, 283, 283, 283, 283, 283, 283, 283,
+        283, 283, 283, 283, 283, 283, 283, 283, 283, 283, 283, 283, 283, 283,
+        283, 283, 283, 284, 284, 284, 284, 284, 284, 284, 284, 284, 284, 284,
+        284, 284, 284, 284, 284, 284, 284, 284, 284, 284, 284, 284, 284, 284,
+        284, 284, 284, 284, 284, 284, 285,
+    };
+    ForAllRLESymbols(run,
+                     [&](size_t len) { symbol_counts[kLZ77Sym[len]] += 1; });
+  };
+
+#ifdef FPNGE_FIXED_PREDICTOR
+  ProcessRow<FPNGE_FIXED_PREDICTOR>(
+      bytes_per_line_buf, mask, current_row_buf, top_buf, left_buf, topleft_buf,
+      encode_chunk_cb, adler_chunk_cb, encode_rle_cb);
+#else
+  ProcessRow<4>(bytes_per_line_buf, mask, current_row_buf, top_buf, left_buf,
+                topleft_buf, encode_chunk_cb, adler_chunk_cb, encode_rle_cb);
+#endif
+}
+
 void AppendBE32(size_t value, BitWriter *writer) {
   writer->Write(8, value >> 24);
   writer->Write(8, (value >> 16) & 0xFF);
@@ -826,7 +979,36 @@ size_t FPNGEEncode(size_t bytes_per_channel, size_t num_channels,
   writer.Write(8, 8);  // deflate with smallest window
   writer.Write(8, 29); // cfm+flg check value
 
-  HuffmanTable huffman_table;
+  uint64_t symbol_counts[286] = {};
+
+  // Sample ~1.5% of the rows in the center of the image.
+  size_t y0 = height * 126 / 256;
+  size_t y1 = height * 130 / 256;
+
+  for (size_t y = y0; y < y1; y++) {
+    const unsigned char *current_row_in = data + row_stride * y;
+    unsigned char *current_row_buf =
+        aligned_buf_ptr + (y % 2 ? bytes_per_line_buf : 0);
+    const unsigned char *top_buf =
+        aligned_buf_ptr + ((y + 1) % 2 ? bytes_per_line_buf : 0);
+    const unsigned char *left_buf =
+        current_row_buf - bytes_per_channel * num_channels;
+    const unsigned char *topleft_buf =
+        top_buf - bytes_per_channel * num_channels;
+
+    memcpy(current_row_buf, current_row_in, bytes_per_line);
+    if (y == y0) {
+      continue;
+    }
+
+    CollectSymbolCounts(bytes_per_line_buf, aligned_adler_mul_buf_ptr,
+                        aligned_mask_buf_ptr, current_row_buf, top_buf,
+                        left_buf, topleft_buf, symbol_counts);
+  }
+
+  memset(buf.data(), 0, buf.size());
+
+  HuffmanTable huffman_table(symbol_counts);
 
   // Single block, dynamic huffman
   writer.Write(3, 0b101);
