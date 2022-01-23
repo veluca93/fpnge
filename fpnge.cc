@@ -260,9 +260,8 @@ struct BitWriter {
 
 void WriteHuffmanCode(uint32_t &dist_nbits, uint32_t &dist_bits,
                       const HuffmanTable &table, BitWriter *writer) {
-  uint32_t dist = 9;
-  dist_nbits = 4;
-  dist_bits = 14;
+  dist_nbits = 1;
+  dist_bits = 0;
 
   constexpr uint8_t kCodeLengthNbits[] = {
       4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 0, 0, 0,
@@ -270,18 +269,15 @@ void WriteHuffmanCode(uint32_t &dist_nbits, uint32_t &dist_bits,
   constexpr uint8_t kCodeLengthOrder[] = {
       16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2, 14, 1, 15,
   };
-  writer->Write(5, 29);   // all lit/len codes
-  writer->Write(5, dist); // distance code up to dist, included
-  writer->Write(4, 15);   // all code length codes
+  writer->Write(5, 29); // all lit/len codes
+  writer->Write(5, 0);  // distance code up to dist, included
+  writer->Write(4, 15); // all code length codes
   for (size_t i = 0; i < 19; i++) {
     writer->Write(3, kCodeLengthNbits[kCodeLengthOrder[i]]);
   }
 
   for (size_t i = 0; i < 286; i++) {
     writer->Write(4, kBitReverseNibbleLookup[table.nbits[i]]);
-  }
-  for (size_t i = 0; i < dist; i++) {
-    writer->Write(4, 0);
   }
   writer->Write(4, 0b1000);
 }
@@ -448,11 +444,8 @@ ProcessRow(size_t bytes_per_line_buf, const unsigned char *mask,
            unsigned char *current_row_buf, const unsigned char *top_buf,
            const unsigned char *left_buf, const unsigned char *topleft_buf,
            CB &&cb, CB_ADL &&cb_adl, CB_RLE &&cb_rle) {
-  alignas(32) uint8_t last_predicted_data[32] = {};
   size_t run = 0;
   for (size_t i = 0; i + 32 <= bytes_per_line_buf; i += 32) {
-    size_t bytes_per_32 = __builtin_popcount(
-        _mm256_movemask_epi8(_mm256_load_si256((__m256i *)(mask + i))));
     alignas(32) uint8_t predicted_data[32] = {};
     if (predictor == 0) {
       for (size_t ii = 0; ii < 32; ii++) {
@@ -491,29 +484,36 @@ ProcessRow(size_t bytes_per_line_buf, const unsigned char *mask,
       }
     }
 
-    bool continue_rle = i != 0 && bytes_per_32 >= 3;
-    for (size_t ii = 0; ii < 32; ii++) {
-      continue_rle &=
-          mask[i + ii] == 0 || predicted_data[ii] == last_predicted_data[ii];
-    }
+    auto maskv = _mm256_load_si256((__m256i *)(mask + i));
+    auto pdata = _mm256_load_si256((__m256i *)predicted_data);
 
-    if (continue_rle) {
+    size_t bytes_per_32 = __builtin_popcount(_mm256_movemask_epi8(maskv));
+
+    auto pdatais0 = _mm256_cmpeq_epi8(pdata, _mm256_setzero_si256());
+    auto isnot0 = _mm256_andnot_si256(pdatais0, maskv);
+
+    uint32_t next0run =
+        __builtin_ctzll(0x100000000UL | _mm256_movemask_epi8(isnot0));
+
+    if (next0run == bytes_per_32 && run + bytes_per_32 >= 16) {
       run += bytes_per_32;
     } else {
-      cb_rle(run);
+      if (run != 0) {
+        cb_rle(run);
+      }
       run = 0;
       cb(predicted_data, mask + i);
     }
     cb_adl(bytes_per_32, predicted_data, mask + i, i);
-    memcpy(last_predicted_data, predicted_data, 32);
   }
-  cb_rle(run);
+  if (run != 0) {
+    cb_rle(run);
+  }
 }
 
 template <typename CB> void ForAllRLESymbols(size_t length, CB &&cb) {
-  if (length == 0)
-    return;
-  assert(length >= 3);
+  assert(length >= 4);
+  length -= 1;
 
   if (length % 258 == 1 || length % 258 == 2) {
     length -= 3;
@@ -572,6 +572,7 @@ void TryPredictor(size_t bytes_per_line_buf, const unsigned char *mask,
       bytes_per_line_buf, mask, current_row_buf, top_buf, left_buf, topleft_buf,
       cost_chunk_cb, [](size_t, const uint8_t *, const uint8_t *, size_t) {},
       [&](size_t run) {
+        cost_rle += table.first16_nbits[0];
         ForAllRLESymbols(run, [&](size_t len) {
           cost_rle += dist_nbits + table.lz77_length_nbits[len];
         });
@@ -806,6 +807,7 @@ void EncodeOneRow(size_t bytes_per_line_buf,
   };
 
   auto encode_rle_cb = [&](size_t run) {
+    writer->Write(table.first16_nbits[0], table.first16_bits[0]);
     ForAllRLESymbols(run, [&](size_t len) {
       writer->Write(table.lz77_length_nbits[len], table.lz77_length_bits[len]);
       writer->Write(dist_nbits, dist_bits);
@@ -849,6 +851,7 @@ void CollectSymbolCounts(
   };
 
   auto encode_rle_cb = [&](size_t run) {
+    symbol_counts[0] += 1;
     constexpr size_t kLZ77Sym[] = {
         0,   0,   0,   257, 258, 259, 260, 261, 262, 263, 264, 265, 265, 266,
         266, 267, 267, 268, 268, 269, 269, 269, 269, 270, 270, 270, 270, 271,
