@@ -447,28 +447,50 @@ ProcessRow(size_t bytes_per_line_buf, const unsigned char *mask,
   size_t run = 0;
   for (size_t i = 0; i + 32 <= bytes_per_line_buf; i += 32) {
     alignas(32) uint8_t predicted_data[32] = {};
+    auto data = _mm256_load_si256((__m256i *)(current_row_buf + i));
     if (predictor == 0) {
-      for (size_t ii = 0; ii < 32; ii++) {
-        uint8_t data = current_row_buf[i + ii];
-        predicted_data[ii] = data;
-      }
+      _mm256_store_si256((__m256i *)predicted_data, data);
     } else if (predictor == 1) {
-      for (size_t ii = 0; ii < 32; ii++) {
-        uint8_t data = current_row_buf[i + ii] - left_buf[i + ii];
-        predicted_data[ii] = data;
-      }
+      auto pred = _mm256_loadu_si256((__m256i *)(left_buf + i));
+      _mm256_store_si256((__m256i *)predicted_data,
+                         _mm256_sub_epi8(data, pred));
     } else if (predictor == 2) {
-      for (size_t ii = 0; ii < 32; ii++) {
-        uint8_t data = current_row_buf[i + ii] - top_buf[i + ii];
-        predicted_data[ii] = data;
-      }
+      auto pred = _mm256_load_si256((__m256i *)(top_buf + i));
+      _mm256_store_si256((__m256i *)predicted_data,
+                         _mm256_sub_epi8(data, pred));
     } else if (predictor == 3) {
-      for (size_t ii = 0; ii < 32; ii++) {
-        uint8_t pred = (top_buf[i + ii] + left_buf[i + ii]) / 2;
-        uint8_t data = current_row_buf[i + ii] - pred;
-        predicted_data[ii] = data;
-      }
+      auto left = _mm256_loadu_si256((__m256i *)(left_buf + i));
+      auto top = _mm256_load_si256((__m256i *)(top_buf + i));
+      auto pred = _mm256_avg_epu8(top, left);
+      // emulate truncating average
+      pred = _mm256_sub_epi8(pred, _mm256_and_si256(_mm256_xor_si256(top, left),
+                                                    _mm256_set1_epi8(1)));
+      _mm256_store_si256((__m256i *)predicted_data,
+                         _mm256_sub_epi8(data, pred));
     } else {
+      auto a = _mm256_loadu_si256((__m256i *)(left_buf + i));
+      auto b = _mm256_load_si256((__m256i *)(top_buf + i));
+      auto c = _mm256_loadu_si256((__m256i *)(topleft_buf + i));
+      auto bc = _mm256_sub_epi8(b, c);
+      auto ca = _mm256_sub_epi8(c, a);
+      auto cgeb = _mm256_cmpeq_epi8(c, _mm256_max_epu8(b, c));
+      auto agec = _mm256_cmpeq_epi8(a, _mm256_max_epu8(a, c));
+      auto pa = _mm256_blendv_epi8(bc, _mm256_sub_epi8(c, b), cgeb);
+      auto pb = _mm256_blendv_epi8(ca, _mm256_sub_epi8(a, c), agec);
+      auto bcgeca = _mm256_cmpeq_epi8(_mm256_max_epu8(bc, ca), bc);
+      auto absbcca = _mm256_blendv_epi8(_mm256_sub_epi8(ca, bc),
+                                        _mm256_sub_epi8(bc, ca), bcgeca);
+      auto pc = _mm256_or_si256(_mm256_xor_si256(agec, cgeb), absbcca);
+      auto use_a =
+          _mm256_and_si256(_mm256_cmpeq_epi8(_mm256_max_epu8(pb, pa), pb),
+                           _mm256_cmpeq_epi8(_mm256_max_epu8(pc, pa), pc));
+      auto use_b = _mm256_cmpeq_epi8(_mm256_max_epu8(pb, pc), pc);
+
+      auto pred = _mm256_blendv_epi8(_mm256_blendv_epi8(c, b, use_b), a, use_a);
+      _mm256_store_si256((__m256i *)predicted_data,
+                         _mm256_sub_epi8(data, pred));
+      /*
+      // Equivalent scalar code:
       for (size_t ii = 0; ii < 32; ii++) {
         uint8_t a = left_buf[i + ii];
         uint8_t b = top_buf[i + ii];
@@ -482,6 +504,7 @@ ProcessRow(size_t bytes_per_line_buf, const unsigned char *mask,
         uint8_t data = current_row_buf[i + ii] - pred;
         predicted_data[ii] = data;
       }
+      */
     }
 
     auto maskv = _mm256_load_si256((__m256i *)(mask + i));
