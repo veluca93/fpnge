@@ -29,6 +29,27 @@
 #endif
 
 
+#ifdef __AVX2__
+# define _mm(f) _mm256_##f
+# define _mmsi(f) _mm256_##f##_si256
+# define _maskop(f) _##f##_u32
+# define __mivec __m256i
+# define BCAST128 _mm256_broadcastsi128_si256
+# define INT2VEC(v) _mm256_castsi128_si256(_mm_cvtsi32_si128(v))
+# define SIMD_WIDTH 32
+#elif defined(__SSE4_1__)
+# define _mm(f) _mm_##f
+# define _mmsi(f) _mm_##f##_si128
+# define _maskop(f) _##f##_u32
+# define __mivec __m128i
+# define BCAST128(v) (v)
+# define INT2VEC _mm_cvtsi32_si128
+# define SIMD_WIDTH 16
+#else
+# error Requires SSE4.1
+#endif
+
+
 alignas(32) constexpr uint8_t kBitReverseNibbleLookup[16] = {
     0b0000, 0b1000, 0b0100, 0b1100, 0b0010, 0b1010, 0b0110, 0b1110,
     0b0001, 0b1001, 0b0101, 0b1101, 0b0011, 0b1011, 0b0111, 0b1111,
@@ -433,9 +454,13 @@ void UpdateAdler32(uint32_t &s1, uint32_t &s2, uint8_t byte) {
   s2 %= kAdler32Mod;
 }
 
-uint32_t hadd(__m256i v) {
+uint32_t hadd(__mivec v) {
   auto sum =
+#ifdef __AVX2__
       _mm_add_epi32(_mm256_castsi256_si128(v), _mm256_extracti128_si256(v, 1));
+#else
+      v;
+#endif
   auto hi = _mm_unpackhi_epi64(sum, sum);
 
   sum = _mm_add_epi32(hi, sum);
@@ -453,50 +478,50 @@ ProcessRow(size_t bytes_per_line_buf, const unsigned char *mask,
            const unsigned char *left_buf, const unsigned char *topleft_buf,
            CB &&cb, CB_ADL &&cb_adl, CB_RLE &&cb_rle) {
   size_t run = 0;
-  for (size_t i = 0; i + 32 <= bytes_per_line_buf; i += 32) {
-    alignas(32) uint8_t predicted_data[32] = {};
-    auto data = _mm256_load_si256((__m256i *)(current_row_buf + i));
+  for (size_t i = 0; i + SIMD_WIDTH <= bytes_per_line_buf; i += SIMD_WIDTH) {
+    alignas(SIMD_WIDTH) uint8_t predicted_data[SIMD_WIDTH] = {};
+    auto data = _mmsi(load)((__mivec *)(current_row_buf + i));
     if (predictor == 0) {
-      _mm256_store_si256((__m256i *)predicted_data, data);
+      _mmsi(store)((__mivec *)predicted_data, data);
     } else if (predictor == 1) {
-      auto pred = _mm256_loadu_si256((__m256i *)(left_buf + i));
-      _mm256_store_si256((__m256i *)predicted_data,
-                         _mm256_sub_epi8(data, pred));
+      auto pred = _mmsi(loadu)((__mivec *)(left_buf + i));
+      _mmsi(store)((__mivec *)predicted_data,
+                         _mm(sub_epi8)(data, pred));
     } else if (predictor == 2) {
-      auto pred = _mm256_load_si256((__m256i *)(top_buf + i));
-      _mm256_store_si256((__m256i *)predicted_data,
-                         _mm256_sub_epi8(data, pred));
+      auto pred = _mmsi(load)((__mivec *)(top_buf + i));
+      _mmsi(store)((__mivec *)predicted_data,
+                         _mm(sub_epi8)(data, pred));
     } else if (predictor == 3) {
-      auto left = _mm256_loadu_si256((__m256i *)(left_buf + i));
-      auto top = _mm256_load_si256((__m256i *)(top_buf + i));
-      auto pred = _mm256_avg_epu8(top, left);
+      auto left = _mmsi(loadu)((__mivec *)(left_buf + i));
+      auto top = _mmsi(load)((__mivec *)(top_buf + i));
+      auto pred = _mm(avg_epu8)(top, left);
       // emulate truncating average
-      pred = _mm256_sub_epi8(pred, _mm256_and_si256(_mm256_xor_si256(top, left),
-                                                    _mm256_set1_epi8(1)));
-      _mm256_store_si256((__m256i *)predicted_data,
-                         _mm256_sub_epi8(data, pred));
+      pred = _mm(sub_epi8)(pred, _mmsi(and)(_mmsi(xor)(top, left),
+                                                    _mm(set1_epi8)(1)));
+      _mmsi(store)((__mivec *)predicted_data,
+                         _mm(sub_epi8)(data, pred));
     } else {
-      auto a = _mm256_loadu_si256((__m256i *)(left_buf + i));
-      auto b = _mm256_load_si256((__m256i *)(top_buf + i));
-      auto c = _mm256_loadu_si256((__m256i *)(topleft_buf + i));
-      auto bc = _mm256_sub_epi8(b, c);
-      auto ca = _mm256_sub_epi8(c, a);
-      auto cgeb = _mm256_cmpeq_epi8(c, _mm256_max_epu8(b, c));
-      auto agec = _mm256_cmpeq_epi8(a, _mm256_max_epu8(a, c));
-      auto pa = _mm256_blendv_epi8(bc, _mm256_sub_epi8(c, b), cgeb);
-      auto pb = _mm256_blendv_epi8(ca, _mm256_sub_epi8(a, c), agec);
-      auto bcgeca = _mm256_cmpeq_epi8(_mm256_max_epu8(bc, ca), bc);
-      auto absbcca = _mm256_blendv_epi8(_mm256_sub_epi8(ca, bc),
-                                        _mm256_sub_epi8(bc, ca), bcgeca);
-      auto pc = _mm256_or_si256(_mm256_xor_si256(agec, cgeb), absbcca);
+      auto a = _mmsi(loadu)((__mivec *)(left_buf + i));
+      auto b = _mmsi(load)((__mivec *)(top_buf + i));
+      auto c = _mmsi(loadu)((__mivec *)(topleft_buf + i));
+      auto bc = _mm(sub_epi8)(b, c);
+      auto ca = _mm(sub_epi8)(c, a);
+      auto cgeb = _mm(cmpeq_epi8)(c, _mm(max_epu8)(b, c));
+      auto agec = _mm(cmpeq_epi8)(a, _mm(max_epu8)(a, c));
+      auto pa = _mm(blendv_epi8)(bc, _mm(sub_epi8)(c, b), cgeb);
+      auto pb = _mm(blendv_epi8)(ca, _mm(sub_epi8)(a, c), agec);
+      auto bcgeca = _mm(cmpeq_epi8)(_mm(max_epu8)(bc, ca), bc);
+      auto absbcca = _mm(blendv_epi8)(_mm(sub_epi8)(ca, bc),
+                                        _mm(sub_epi8)(bc, ca), bcgeca);
+      auto pc = _mmsi(or)(_mmsi(xor)(agec, cgeb), absbcca);
       auto use_a =
-          _mm256_and_si256(_mm256_cmpeq_epi8(_mm256_max_epu8(pb, pa), pb),
-                           _mm256_cmpeq_epi8(_mm256_max_epu8(pc, pa), pc));
-      auto use_b = _mm256_cmpeq_epi8(_mm256_max_epu8(pb, pc), pc);
+          _mmsi(and)(_mm(cmpeq_epi8)(_mm(max_epu8)(pb, pa), pb),
+                           _mm(cmpeq_epi8)(_mm(max_epu8)(pc, pa), pc));
+      auto use_b = _mm(cmpeq_epi8)(_mm(max_epu8)(pb, pc), pc);
 
-      auto pred = _mm256_blendv_epi8(_mm256_blendv_epi8(c, b, use_b), a, use_a);
-      _mm256_store_si256((__m256i *)predicted_data,
-                         _mm256_sub_epi8(data, pred));
+      auto pred = _mm(blendv_epi8)(_mm(blendv_epi8)(c, b, use_b), a, use_a);
+      _mmsi(store)((__mivec *)predicted_data,
+                         _mm(sub_epi8)(data, pred));
       /*
       // Equivalent scalar code:
       for (size_t ii = 0; ii < 32; ii++) {
@@ -515,19 +540,19 @@ ProcessRow(size_t bytes_per_line_buf, const unsigned char *mask,
       */
     }
 
-    auto maskv = _mm256_load_si256((__m256i *)(mask + i));
-    auto pdata = _mm256_load_si256((__m256i *)predicted_data);
+    auto maskv = _mmsi(load)((__mivec *)(mask + i));
+    auto pdata = _mmsi(load)((__mivec *)predicted_data);
 
-    size_t bytes_per_32 = _mm_popcnt_u32(_mm256_movemask_epi8(maskv));
+    size_t bytes_per_vec = _maskop(mm_popcnt)(_mm(movemask_epi8)(maskv));
 
-    auto pdatais0 = _mm256_cmpeq_epi8(pdata, _mm256_setzero_si256());
-    auto isnot0 = _mm256_andnot_si256(pdatais0, maskv);
+    auto pdatais0 = _mm(cmpeq_epi8)(pdata, _mmsi(setzero)());
+    auto isnot0 = _mmsi(andnot)(pdatais0, maskv);
 
-    uint32_t next0run =
-        _tzcnt_u32(0x100000000UL | _mm256_movemask_epi8(isnot0));
+    auto next0run =
+        _maskop(tzcnt)((1UL << SIMD_WIDTH) | _mm(movemask_epi8)(isnot0));
 
-    if (next0run == bytes_per_32 && run + bytes_per_32 >= 16) {
-      run += bytes_per_32;
+    if (next0run == bytes_per_vec && run + bytes_per_vec >= 16) {
+      run += bytes_per_vec;
     } else {
       if (run != 0) {
         cb_rle(run);
@@ -535,7 +560,7 @@ ProcessRow(size_t bytes_per_line_buf, const unsigned char *mask,
       run = 0;
       cb(predicted_data, mask + i);
     }
-    cb_adl(bytes_per_32, predicted_data, mask + i, i);
+    cb_adl(bytes_per_vec, predicted_data, mask + i, i);
   }
   if (run != 0) {
     cb_rle(run);
@@ -566,38 +591,38 @@ void TryPredictor(size_t bytes_per_line_buf, const unsigned char *mask,
                   const unsigned char *topleft_buf, const HuffmanTable &table,
                   size_t &best_cost, uint8_t &predictor, size_t dist_nbits) {
   size_t cost_rle = 0;
-  __m256i cost_direct = _mm256_setzero_si256();
+  __mivec cost_direct = _mmsi(setzero)();
   auto cost_chunk_cb = [&](const uint8_t *predicted_data, const uint8_t *mask)
       FORCE_INLINE {
 
-    auto bytes = _mm256_load_si256((__m256i *)predicted_data);
+    auto bytes = _mmsi(load)((__mivec *)predicted_data);
 
-    auto data_for_lut = _mm256_and_si256(_mm256_set1_epi8(0xF), bytes);
-    auto data_for_blend = _mm256_and_si256(_mm256_set1_epi8(0xF0), bytes);
+    auto data_for_lut = _mmsi(and)(_mm(set1_epi8)(0xF), bytes);
+    auto data_for_blend = _mmsi(and)(_mm(set1_epi8)(0xF0), bytes);
 
     auto nbits_low16 =
-        _mm256_shuffle_epi8(_mm256_broadcastsi128_si256(
+        _mm(shuffle_epi8)(BCAST128(
                                 _mm_load_si128((__m128i *)table.first16_nbits)),
                             data_for_lut);
     auto nbits_hi16 =
-        _mm256_shuffle_epi8(_mm256_broadcastsi128_si256(
+        _mm(shuffle_epi8)(BCAST128(
                                 _mm_load_si128((__m128i *)table.last16_nbits)),
                             data_for_lut);
 
-    auto nbits = _mm256_set1_epi8(table.mid_nbits);
+    auto nbits = _mm(set1_epi8)(table.mid_nbits);
 
-    nbits = _mm256_blendv_epi8(
+    nbits = _mm(blendv_epi8)(
         nbits, nbits_hi16,
-        _mm256_cmpeq_epi8(data_for_blend, _mm256_set1_epi8(0xF0)));
+        _mm(cmpeq_epi8)(data_for_blend, _mm(set1_epi8)(0xF0)));
 
-    nbits = _mm256_blendv_epi8(
+    nbits = _mm(blendv_epi8)(
         nbits, nbits_low16,
-        _mm256_cmpeq_epi8(data_for_blend, _mm256_setzero_si256()));
+        _mm(cmpeq_epi8)(data_for_blend, _mmsi(setzero)()));
 
-    nbits = _mm256_and_si256(nbits, _mm256_load_si256((__m256i *)mask));
+    nbits = _mmsi(and)(nbits, _mmsi(load)((__mivec *)mask));
 
-    cost_direct = _mm256_add_epi32(
-        cost_direct, _mm256_sad_epu8(nbits, _mm256_setzero_si256()));
+    cost_direct = _mm(add_epi32)(
+        cost_direct, _mm(sad_epu8)(nbits, _mmsi(setzero)()));
   };
   ProcessRow<pred>(
       bytes_per_line_buf, mask, current_row_buf, top_buf, left_buf, topleft_buf,
@@ -616,78 +641,82 @@ void TryPredictor(size_t bytes_per_line_buf, const unsigned char *mask,
 }
 
 // Either bits_hi is empty, or bits_lo contains exactly mid_lo_nbits bits.
-FORCE_INLINE void WriteBits(__m256i nbits, __m256i bits_lo,
-                                              __m256i bits_hi,
+FORCE_INLINE void WriteBits(__mivec nbits, __mivec bits_lo,
+                                              __mivec bits_hi,
                                               size_t mid_lo_nbits,
                                               BitWriter *writer) {
 
   // Merge bits_lo and bits_hi in 16-bit "bits".
-  auto nbits0 = _mm256_unpacklo_epi8(nbits, _mm256_setzero_si256());
-  auto nbits1 = _mm256_unpackhi_epi8(nbits, _mm256_setzero_si256());
-  auto bits_lo0 = _mm256_unpacklo_epi8(bits_lo, _mm256_setzero_si256());
-  auto bits_lo1 = _mm256_unpackhi_epi8(bits_lo, _mm256_setzero_si256());
-  auto bits_hi0 = _mm256_unpacklo_epi8(bits_hi, _mm256_setzero_si256());
-  auto bits_hi1 = _mm256_unpackhi_epi8(bits_hi, _mm256_setzero_si256());
+  auto nbits0 = _mm(unpacklo_epi8)(nbits, _mmsi(setzero)());
+  auto nbits1 = _mm(unpackhi_epi8)(nbits, _mmsi(setzero)());
+  auto bits_lo0 = _mm(unpacklo_epi8)(bits_lo, _mmsi(setzero)());
+  auto bits_lo1 = _mm(unpackhi_epi8)(bits_lo, _mmsi(setzero)());
+  auto bits_hi0 = _mm(unpacklo_epi8)(bits_hi, _mmsi(setzero)());
+  auto bits_hi1 = _mm(unpackhi_epi8)(bits_hi, _mmsi(setzero)());
 
-  auto bits0 = _mm256_or_si256(
-      _mm256_mullo_epi16(_mm256_set1_epi16(1 << mid_lo_nbits), bits_hi0),
+  auto bits0 = _mmsi(or)(
+      _mm(mullo_epi16)(_mm(set1_epi16)(1 << mid_lo_nbits), bits_hi0),
       bits_lo0);
-  auto bits1 = _mm256_or_si256(
-      _mm256_mullo_epi16(_mm256_set1_epi16(1 << mid_lo_nbits), bits_hi1),
+  auto bits1 = _mmsi(or)(
+      _mm(mullo_epi16)(_mm(set1_epi16)(1 << mid_lo_nbits), bits_hi1),
       bits_lo1);
 
   // 16 -> 32
-  auto nbits0_32_lo = _mm256_and_si256(nbits0, _mm256_set1_epi32(0xFF));
-  auto nbits1_32_lo = _mm256_and_si256(nbits1, _mm256_set1_epi32(0xFF));
-  auto nbits0_32_hi = _mm256_srai_epi32(nbits0, 16);
-  auto nbits1_32_hi = _mm256_srai_epi32(nbits1, 16);
+  auto nbits0_32_lo = _mmsi(and)(nbits0, _mm(set1_epi32)(0xFF));
+  auto nbits1_32_lo = _mmsi(and)(nbits1, _mm(set1_epi32)(0xFF));
+  auto nbits0_32_hi = _mm(srai_epi32)(nbits0, 16);
+  auto nbits1_32_hi = _mm(srai_epi32)(nbits1, 16);
 
-  auto bits0_32_lo = _mm256_and_si256(bits0, _mm256_set1_epi32(0xFFFF));
-  auto bits1_32_lo = _mm256_and_si256(bits1, _mm256_set1_epi32(0xFFFF));
+  auto bits0_32_lo = _mmsi(and)(bits0, _mm(set1_epi32)(0xFFFF));
+  auto bits1_32_lo = _mmsi(and)(bits1, _mm(set1_epi32)(0xFFFF));
   auto bits0_32_hi =
-      _mm256_sllv_epi32(_mm256_srli_epi32(bits0, 16), nbits0_32_lo);
+      _mm(sllv_epi32)(_mm(srli_epi32)(bits0, 16), nbits0_32_lo);
   auto bits1_32_hi =
-      _mm256_sllv_epi32(_mm256_srli_epi32(bits1, 16), nbits1_32_lo);
+      _mm(sllv_epi32)(_mm(srli_epi32)(bits1, 16), nbits1_32_lo);
 
-  auto nbits0_32 = _mm256_add_epi32(nbits0_32_lo, nbits0_32_hi);
-  auto nbits1_32 = _mm256_add_epi32(nbits1_32_lo, nbits1_32_hi);
-  auto bits0_32 = _mm256_or_si256(bits0_32_lo, bits0_32_hi);
-  auto bits1_32 = _mm256_or_si256(bits1_32_lo, bits1_32_hi);
+  auto nbits0_32 = _mm(add_epi32)(nbits0_32_lo, nbits0_32_hi);
+  auto nbits1_32 = _mm(add_epi32)(nbits1_32_lo, nbits1_32_hi);
+  auto bits0_32 = _mmsi(or)(bits0_32_lo, bits0_32_hi);
+  auto bits1_32 = _mmsi(or)(bits1_32_lo, bits1_32_hi);
 
   // 32 -> 64
-  auto nbits0_64_lo = _mm256_and_si256(nbits0_32, _mm256_set1_epi64x(0xFF));
-  auto nbits1_64_lo = _mm256_and_si256(nbits1_32, _mm256_set1_epi64x(0xFF));
-  auto nbits0_64_hi = _mm256_srli_epi64(nbits0_32, 32);
-  auto nbits1_64_hi = _mm256_srli_epi64(nbits1_32, 32);
+  auto nbits0_64_lo = _mmsi(and)(nbits0_32, _mm(set1_epi64x)(0xFF));
+  auto nbits1_64_lo = _mmsi(and)(nbits1_32, _mm(set1_epi64x)(0xFF));
+  auto nbits0_64_hi = _mm(srli_epi64)(nbits0_32, 32);
+  auto nbits1_64_hi = _mm(srli_epi64)(nbits1_32, 32);
 
-  auto bits0_64_lo = _mm256_and_si256(bits0_32, _mm256_set1_epi64x(0xFFFFFFFF));
-  auto bits1_64_lo = _mm256_and_si256(bits1_32, _mm256_set1_epi64x(0xFFFFFFFF));
+  auto bits0_64_lo = _mmsi(and)(bits0_32, _mm(set1_epi64x)(0xFFFFFFFF));
+  auto bits1_64_lo = _mmsi(and)(bits1_32, _mm(set1_epi64x)(0xFFFFFFFF));
   auto bits0_64_hi =
-      _mm256_sllv_epi64(_mm256_srli_epi64(bits0_32, 32), nbits0_64_lo);
+      _mm(sllv_epi64)(_mm(srli_epi64)(bits0_32, 32), nbits0_64_lo);
   auto bits1_64_hi =
-      _mm256_sllv_epi64(_mm256_srli_epi64(bits1_32, 32), nbits1_64_lo);
+      _mm(sllv_epi64)(_mm(srli_epi64)(bits1_32, 32), nbits1_64_lo);
 
-  auto nbits0_64 = _mm256_add_epi64(nbits0_64_lo, nbits0_64_hi);
-  auto nbits1_64 = _mm256_add_epi64(nbits1_64_lo, nbits1_64_hi);
-  auto bits0_64 = _mm256_or_si256(bits0_64_lo, bits0_64_hi);
-  auto bits1_64 = _mm256_or_si256(bits1_64_lo, bits1_64_hi);
+  auto nbits0_64 = _mm(add_epi64)(nbits0_64_lo, nbits0_64_hi);
+  auto nbits1_64 = _mm(add_epi64)(nbits1_64_lo, nbits1_64_hi);
+  auto bits0_64 = _mmsi(or)(bits0_64_lo, bits0_64_hi);
+  auto bits1_64 = _mmsi(or)(bits1_64_lo, bits1_64_hi);
 
   // nbits_a <= 40 as we have at most 10 bits per symbol, so the call to the
   // writer is safe.
-  alignas(32) uint64_t nbits_a[8];
-  _mm256_store_si256((__m256i *)nbits_a, nbits0_64);
-  _mm256_store_si256((__m256i *)nbits_a + 1, nbits1_64);
-  alignas(32) uint64_t bits_a[8];
-  _mm256_store_si256((__m256i *)bits_a, bits0_64);
-  _mm256_store_si256((__m256i *)bits_a + 1, bits1_64);
+  alignas(SIMD_WIDTH) uint64_t nbits_a[SIMD_WIDTH/4];
+  _mmsi(store)((__mivec *)nbits_a, nbits0_64);
+  _mmsi(store)((__mivec *)nbits_a + 1, nbits1_64);
+  alignas(SIMD_WIDTH) uint64_t bits_a[SIMD_WIDTH/4];
+  _mmsi(store)((__mivec *)bits_a, bits0_64);
+  _mmsi(store)((__mivec *)bits_a + 1, bits1_64);
 
-  constexpr uint8_t kPerm[8] = {0, 1, 4, 5, 2, 3, 6, 7};
+#ifdef __AVX2__
+  constexpr uint8_t kPerm[] = {0, 1, 4, 5, 2, 3, 6, 7};
+#else
+  constexpr uint8_t kPerm[] = {0, 1, 2, 3};
+#endif
 
   // call to WriteBits manually inlined: compiler assumes aliasing may happen.
   uint64_t buffer = writer->buffer;
   uint64_t bits_in_buffer = writer->bits_in_buffer;
   uint64_t bytes_written = writer->bytes_written;
-  for (size_t ii = 0; ii < 8; ii++) {
+  for (size_t ii = 0; ii < SIMD_WIDTH/4; ii++) {
     uint64_t bits = bits_a[kPerm[ii]];
     uint64_t count = nbits_a[kPerm[ii]];
     buffer |= bits << bits_in_buffer;
@@ -728,8 +757,8 @@ void EncodeOneRow(size_t bytes_per_line_buf,
   writer->Write(table.first16_nbits[predictor], table.first16_bits[predictor]);
   UpdateAdler32(s1, s2, predictor);
 
-  auto adler_accum_s1 = _mm256_castsi128_si256(_mm_cvtsi32_si128(s1));
-  auto adler_accum_s2 = _mm256_castsi128_si256(_mm_cvtsi32_si128(s2));
+  auto adler_accum_s1 = INT2VEC(s1);
+  auto adler_accum_s2 = INT2VEC(s2);
 
   size_t last_adler_flush = 0;
   uint16_t len = 1;
@@ -741,96 +770,96 @@ void EncodeOneRow(size_t bytes_per_line_buf,
     ls2 %= kAdler32Mod;
     s1 = ls1;
     s2 = ls2;
-    adler_accum_s1 = _mm256_castsi128_si256(_mm_cvtsi32_si128(s1));
-    adler_accum_s2 = _mm256_castsi128_si256(_mm_cvtsi32_si128(s2));
+    adler_accum_s1 = INT2VEC(s1);
+    adler_accum_s2 = INT2VEC(s2);
     last_adler_flush = len;
   };
 
   auto encode_chunk_cb = [&](const uint8_t *predicted_data,
                              const uint8_t *mask) {
-    auto bytes = _mm256_load_si256((__m256i *)predicted_data);
-    auto maskv = _mm256_load_si256((__m256i *)mask);
+    auto bytes = _mmsi(load)((__mivec *)predicted_data);
+    auto maskv = _mmsi(load)((__mivec *)mask);
 
-    auto data_for_lut = _mm256_and_si256(_mm256_set1_epi8(0xF), bytes);
-    auto data_for_blend = _mm256_and_si256(_mm256_set1_epi8(0xF0), bytes);
+    auto data_for_lut = _mmsi(and)(_mm(set1_epi8)(0xF), bytes);
+    auto data_for_blend = _mmsi(and)(_mm(set1_epi8)(0xF0), bytes);
     auto data_for_midlut =
-        _mm256_and_si256(_mm256_set1_epi8(0xF), _mm256_srai_epi16(bytes, 4));
+        _mmsi(and)(_mm(set1_epi8)(0xF), _mm(srai_epi16)(bytes, 4));
 
     auto nbits_low16 =
-        _mm256_shuffle_epi8(_mm256_broadcastsi128_si256(
+        _mm(shuffle_epi8)(BCAST128(
                                 _mm_load_si128((__m128i *)table.first16_nbits)),
                             data_for_lut);
     auto nbits_hi16 =
-        _mm256_shuffle_epi8(_mm256_broadcastsi128_si256(
+        _mm(shuffle_epi8)(BCAST128(
                                 _mm_load_si128((__m128i *)table.last16_nbits)),
                             data_for_lut);
 
     auto bits_low16 =
-        _mm256_shuffle_epi8(_mm256_broadcastsi128_si256(
+        _mm(shuffle_epi8)(BCAST128(
                                 _mm_load_si128((__m128i *)table.first16_bits)),
                             data_for_lut);
     auto bits_hi16 =
-        _mm256_shuffle_epi8(_mm256_broadcastsi128_si256(
+        _mm(shuffle_epi8)(BCAST128(
                                 _mm_load_si128((__m128i *)table.last16_bits)),
                             data_for_lut);
     auto bits_mid_lo =
-        _mm256_shuffle_epi8(_mm256_broadcastsi128_si256(
+        _mm(shuffle_epi8)(BCAST128(
                                 _mm_load_si128((__m128i *)table.mid_lowbits)),
                             data_for_midlut);
 
     auto bits_mid_hi =
-        _mm256_shuffle_epi8(_mm256_broadcastsi128_si256(_mm_load_si128(
+        _mm(shuffle_epi8)(BCAST128(_mm_load_si128(
                                 (__m128i *)kBitReverseNibbleLookup)),
                             data_for_lut);
 
-    auto nbits = _mm256_set1_epi8(table.mid_nbits);
+    auto nbits = _mm(set1_epi8)(table.mid_nbits);
 
-    nbits = _mm256_blendv_epi8(
+    nbits = _mm(blendv_epi8)(
         nbits, nbits_hi16,
-        _mm256_cmpeq_epi8(data_for_blend, _mm256_set1_epi8(0xF0)));
+        _mm(cmpeq_epi8)(data_for_blend, _mm(set1_epi8)(0xF0)));
 
-    nbits = _mm256_blendv_epi8(
+    nbits = _mm(blendv_epi8)(
         nbits, nbits_low16,
-        _mm256_cmpeq_epi8(data_for_blend, _mm256_setzero_si256()));
+        _mm(cmpeq_epi8)(data_for_blend, _mmsi(setzero)()));
 
-    nbits = _mm256_and_si256(nbits, maskv);
+    nbits = _mmsi(and)(nbits, maskv);
 
-    auto bits_lo = _mm256_blendv_epi8(
+    auto bits_lo = _mm(blendv_epi8)(
         bits_mid_lo, bits_hi16,
-        _mm256_cmpeq_epi8(data_for_blend, _mm256_set1_epi8(0xF0)));
+        _mm(cmpeq_epi8)(data_for_blend, _mm(set1_epi8)(0xF0)));
 
-    bits_lo = _mm256_blendv_epi8(
+    bits_lo = _mm(blendv_epi8)(
         bits_lo, bits_low16,
-        _mm256_cmpeq_epi8(data_for_blend, _mm256_setzero_si256()));
+        _mm(cmpeq_epi8)(data_for_blend, _mmsi(setzero)()));
 
-    bits_lo = _mm256_and_si256(bits_lo, maskv);
+    bits_lo = _mmsi(and)(bits_lo, maskv);
 
-    auto bits_hi = _mm256_and_si256(
+    auto bits_hi = _mmsi(and)(
         bits_mid_hi,
-        _mm256_cmpeq_epi8(nbits, _mm256_set1_epi8(table.mid_nbits)));
-    bits_hi = _mm256_and_si256(bits_hi, maskv);
+        _mm(cmpeq_epi8)(nbits, _mm(set1_epi8)(table.mid_nbits)));
+    bits_hi = _mmsi(and)(bits_hi, maskv);
 
     WriteBits(nbits, bits_lo, bits_hi, table.mid_nbits - 4, writer);
   };
 
-  auto adler_chunk_cb = [&](size_t bytes_per_32, const uint8_t *predicted_data,
+  auto adler_chunk_cb = [&](size_t bytes_per_vec, const uint8_t *predicted_data,
                             const uint8_t *mask, size_t i) {
-    len += bytes_per_32;
+    len += bytes_per_vec;
 
-    adler_accum_s2 = _mm256_add_epi32(
-        _mm256_mullo_epi32(_mm256_set1_epi32(bytes_per_32), adler_accum_s1),
+    adler_accum_s2 = _mm(add_epi32)(
+        _mm(mullo_epi32)(_mm(set1_epi32)(bytes_per_vec), adler_accum_s1),
         adler_accum_s2);
 
-    auto bytes = _mm256_and_si256(_mm256_load_si256((__m256i *)predicted_data),
-                                  _mm256_load_si256((__m256i *)mask));
+    auto bytes = _mmsi(and)(_mmsi(load)((__mivec *)predicted_data),
+                                  _mmsi(load)((__mivec *)mask));
 
-    adler_accum_s1 = _mm256_add_epi32(
-        adler_accum_s1, _mm256_sad_epu8(bytes, _mm256_setzero_si256()));
+    adler_accum_s1 = _mm(add_epi32)(
+        adler_accum_s1, _mm(sad_epu8)(bytes, _mmsi(setzero)()));
 
-    auto muls = _mm256_load_si256((__m256i *)(aligned_adler_mul_buf_ptr + i));
-    auto bytesmuls = _mm256_maddubs_epi16(bytes, muls);
-    adler_accum_s2 = _mm256_add_epi32(
-        adler_accum_s2, _mm256_madd_epi16(bytesmuls, _mm256_set1_epi16(1)));
+    auto muls = _mmsi(load)((__mivec *)(aligned_adler_mul_buf_ptr + i));
+    auto bytesmuls = _mm(maddubs_epi16)(bytes, muls);
+    adler_accum_s2 = _mm(add_epi32)(
+        adler_accum_s2, _mm(madd_epi16)(bytesmuls, _mm(set1_epi16)(1)));
 
     if (len >= 5500 + last_adler_flush) {
       flush_adler();
@@ -873,7 +902,7 @@ void CollectSymbolCounts(
 
   auto encode_chunk_cb = [&](const uint8_t *predicted_data,
                              const uint8_t *mask) {
-    for (size_t i = 0; i < 32; i++) {
+    for (size_t i = 0; i < SIMD_WIDTH; i++) {
       symbol_counts[predicted_data[i]] += mask[i] != 0;
     }
   };
@@ -963,34 +992,34 @@ size_t FPNGEEncode(size_t bytes_per_channel, size_t num_channels,
   // allows for padding, and for extra initial space for the "left" pixel for
   // predictors.
   size_t bytes_per_line_buf =
-      (bytes_per_line + 4 * bytes_per_channel + 31) / 32 * 32;
+      (bytes_per_line + 4 * bytes_per_channel + SIMD_WIDTH-1) / SIMD_WIDTH * SIMD_WIDTH;
 
   // Extra space for alignment purposes.
-  std::vector<unsigned char> buf(bytes_per_line_buf * 2 + 31 +
+  std::vector<unsigned char> buf(bytes_per_line_buf * 2 + SIMD_WIDTH-1 +
                                  4 * bytes_per_channel);
   unsigned char *aligned_buf_ptr = buf.data() + 4 * bytes_per_channel;
-  aligned_buf_ptr += (intptr_t)aligned_buf_ptr % 32
-                         ? (32 - (intptr_t)aligned_buf_ptr % 32)
+  aligned_buf_ptr += (intptr_t)aligned_buf_ptr % SIMD_WIDTH
+                         ? (SIMD_WIDTH - (intptr_t)aligned_buf_ptr % SIMD_WIDTH)
                          : 0;
 
-  std::vector<unsigned char> mask_buf(bytes_per_line_buf + 31);
+  std::vector<unsigned char> mask_buf(bytes_per_line_buf + SIMD_WIDTH-1);
   unsigned char *aligned_mask_buf_ptr = mask_buf.data();
-  aligned_mask_buf_ptr += (intptr_t)aligned_mask_buf_ptr % 32
-                              ? (32 - (intptr_t)aligned_mask_buf_ptr % 32)
+  aligned_mask_buf_ptr += (intptr_t)aligned_mask_buf_ptr % SIMD_WIDTH
+                              ? (SIMD_WIDTH - (intptr_t)aligned_mask_buf_ptr % SIMD_WIDTH)
                               : 0;
 
-  std::vector<unsigned char> adler_mul_buf(bytes_per_line_buf + 31);
+  std::vector<unsigned char> adler_mul_buf(bytes_per_line_buf + SIMD_WIDTH-1);
   unsigned char *aligned_adler_mul_buf_ptr = adler_mul_buf.data();
   aligned_adler_mul_buf_ptr +=
-      (intptr_t)aligned_adler_mul_buf_ptr % 32
-          ? (32 - (intptr_t)aligned_adler_mul_buf_ptr % 32)
+      (intptr_t)aligned_adler_mul_buf_ptr % SIMD_WIDTH
+          ? (SIMD_WIDTH - (intptr_t)aligned_adler_mul_buf_ptr % SIMD_WIDTH)
           : 0;
 
   // Initialize the mask & adler multipliers data.
   memset(aligned_mask_buf_ptr, 0xFF, bytes_per_line);
   memset(aligned_adler_mul_buf_ptr, 0x01, bytes_per_line);
-  for (size_t i = 0; i < bytes_per_line; i += 32) {
-    for (size_t ii = 31; ii-- > 0;) {
+  for (size_t i = 0; i < bytes_per_line; i += SIMD_WIDTH) {
+    for (size_t ii = SIMD_WIDTH-1; ii-- > 0;) {
       aligned_adler_mul_buf_ptr[i + ii] +=
           aligned_adler_mul_buf_ptr[i + ii + 1];
     }
