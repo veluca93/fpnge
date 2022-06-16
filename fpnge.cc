@@ -21,6 +21,14 @@
 #include <string.h>
 #include <vector>
 
+
+#ifdef _MSC_VER
+# define FORCE_INLINE [[msvc::forceinline]]
+#else
+# define FORCE_INLINE __attribute__((always_inline))
+#endif
+
+
 alignas(32) constexpr uint8_t kBitReverseNibbleLookup[16] = {
     0b0000, 0b1000, 0b0100, 0b1100, 0b0010, 0b1010, 0b0110, 0b1110,
     0b0001, 0b1001, 0b0101, 0b1101, 0b0011, 0b1011, 0b0111, 0b1111,
@@ -425,7 +433,7 @@ void UpdateAdler32(uint32_t &s1, uint32_t &s2, uint8_t byte) {
   s2 %= kAdler32Mod;
 }
 
-uint32_t hadd(__m256 v) {
+uint32_t hadd(__m256i v) {
   auto sum =
       _mm_add_epi32(_mm256_castsi256_si128(v), _mm256_extracti128_si256(v, 1));
   auto hi = _mm_unpackhi_epi64(sum, sum);
@@ -439,7 +447,7 @@ uint32_t hadd(__m256 v) {
 }
 
 template <size_t predictor, typename CB, typename CB_ADL, typename CB_RLE>
-__attribute__((always_inline)) void
+FORCE_INLINE void
 ProcessRow(size_t bytes_per_line_buf, const unsigned char *mask,
            unsigned char *current_row_buf, const unsigned char *top_buf,
            const unsigned char *left_buf, const unsigned char *topleft_buf,
@@ -510,13 +518,13 @@ ProcessRow(size_t bytes_per_line_buf, const unsigned char *mask,
     auto maskv = _mm256_load_si256((__m256i *)(mask + i));
     auto pdata = _mm256_load_si256((__m256i *)predicted_data);
 
-    size_t bytes_per_32 = __builtin_popcount(_mm256_movemask_epi8(maskv));
+    size_t bytes_per_32 = _mm_popcnt_u32(_mm256_movemask_epi8(maskv));
 
     auto pdatais0 = _mm256_cmpeq_epi8(pdata, _mm256_setzero_si256());
     auto isnot0 = _mm256_andnot_si256(pdatais0, maskv);
 
     uint32_t next0run =
-        __builtin_ctzll(0x100000000UL | _mm256_movemask_epi8(isnot0));
+        _tzcnt_u32(0x100000000UL | _mm256_movemask_epi8(isnot0));
 
     if (next0run == bytes_per_32 && run + bytes_per_32 >= 16) {
       run += bytes_per_32;
@@ -560,7 +568,7 @@ void TryPredictor(size_t bytes_per_line_buf, const unsigned char *mask,
   size_t cost_rle = 0;
   __m256i cost_direct = _mm256_setzero_si256();
   auto cost_chunk_cb = [&](const uint8_t *predicted_data, const uint8_t *mask)
-      __attribute__((always_inline)) {
+      FORCE_INLINE {
 
     auto bytes = _mm256_load_si256((__m256i *)predicted_data);
 
@@ -608,7 +616,7 @@ void TryPredictor(size_t bytes_per_line_buf, const unsigned char *mask,
 }
 
 // Either bits_hi is empty, or bits_lo contains exactly mid_lo_nbits bits.
-__attribute__((always_inline)) void WriteBits(__m256i nbits, __m256i bits_lo,
+FORCE_INLINE void WriteBits(__m256i nbits, __m256i bits_lo,
                                               __m256i bits_hi,
                                               size_t mid_lo_nbits,
                                               BitWriter *writer) {
