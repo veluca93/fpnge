@@ -14,7 +14,6 @@
 
 #include <algorithm>
 #include <assert.h>
-#include <immintrin.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -24,29 +23,38 @@
 
 #ifdef _MSC_VER
 # define FORCE_INLINE [[msvc::forceinline]]
+static FORCE_INLINE unsigned BSF32(unsigned v) {
+  unsigned long idx;
+  _BitScanReverse(&idx, v);
+  return idx;
+}
+# define __SSE4_1__ 1
 #else
 # define FORCE_INLINE __attribute__((always_inline))
+# define BSF32 __builtin_ctzl
 #endif
 
 
+#include <wmmintrin.h>  // for CLMUL
+
 #ifdef __AVX2__
+# include <immintrin.h>
 # define _mm(f) _mm256_##f
 # define _mmsi(f) _mm256_##f##_si256
-# define _maskop(f) _##f##_u32
 # define __mivec __m256i
 # define BCAST128 _mm256_broadcastsi128_si256
 # define INT2VEC(v) _mm256_castsi128_si256(_mm_cvtsi32_si128(v))
 # define SIMD_WIDTH 32
 #elif defined(__SSE4_1__)
+# include <nmmintrin.h>
 # define _mm(f) _mm_##f
 # define _mmsi(f) _mm_##f##_si128
-# define _maskop(f) _##f##_u32
 # define __mivec __m128i
 # define BCAST128(v) (v)
 # define INT2VEC _mm_cvtsi32_si128
 # define SIMD_WIDTH 16
 #else
-# error Requires SSE4.1
+# error Requires SSE4.1 support minium
 #endif
 
 
@@ -543,13 +551,17 @@ ProcessRow(size_t bytes_per_line_buf, const unsigned char *mask,
     auto maskv = _mmsi(load)((__mivec *)(mask + i));
     auto pdata = _mmsi(load)((__mivec *)predicted_data);
 
-    size_t bytes_per_vec = _maskop(mm_popcnt)(_mm(movemask_epi8)(maskv));
+    size_t bytes_per_vec = _mm_popcnt_u32(_mm(movemask_epi8)(maskv));
 
     auto pdatais0 = _mm(cmpeq_epi8)(pdata, _mmsi(setzero)());
     auto isnot0 = _mmsi(andnot)(pdatais0, maskv);
 
     auto next0run =
-        _maskop(tzcnt)((1UL << SIMD_WIDTH) | _mm(movemask_epi8)(isnot0));
+#ifdef __AVX2__
+        _tzcnt_u32(_mm(movemask_epi8)(isnot0));
+#else
+        BSF32((1UL << SIMD_WIDTH) | _mm(movemask_epi8)(isnot0));
+#endif
 
     if (next0run == bytes_per_vec && run + bytes_per_vec >= 16) {
       run += bytes_per_vec;
@@ -669,10 +681,25 @@ FORCE_INLINE void WriteBits(__mivec nbits, __mivec bits_lo,
 
   auto bits0_32_lo = _mmsi(and)(bits0, _mm(set1_epi32)(0xFFFF));
   auto bits1_32_lo = _mmsi(and)(bits1, _mm(set1_epi32)(0xFFFF));
+#ifdef __AVX2__
   auto bits0_32_hi =
       _mm(sllv_epi32)(_mm(srli_epi32)(bits0, 16), nbits0_32_lo);
   auto bits1_32_hi =
       _mm(sllv_epi32)(_mm(srli_epi32)(bits1, 16), nbits1_32_lo);
+#else
+  // emulate variable shift by abusing float exponents
+  // first, convert to float
+  auto bits0_32_hi = _mm_castps_si128(_mm(cvtepi32_ps)(_mm(srli_epi32)(bits0, 16)));
+  auto bits1_32_hi = _mm_castps_si128(_mm(cvtepi32_ps)(_mm(srli_epi32)(bits1, 16)));
+  
+  // add shift amount to the exponent
+  bits0_32_hi = _mm(add_epi32)(bits0_32_hi, _mm(slli_epi32)(nbits0_32_lo, 23));
+  bits1_32_hi = _mm(add_epi32)(bits1_32_hi, _mm(slli_epi32)(nbits1_32_lo, 23));
+  
+  // convert back to int
+  bits0_32_hi = _mm(cvtps_epi32)(_mm_castsi128_ps(bits0_32_hi));
+  bits1_32_hi = _mm(cvtps_epi32)(_mm_castsi128_ps(bits1_32_hi));
+#endif
 
   auto nbits0_32 = _mm(add_epi32)(nbits0_32_lo, nbits0_32_hi);
   auto nbits1_32 = _mm(add_epi32)(nbits1_32_lo, nbits1_32_hi);
@@ -687,10 +714,27 @@ FORCE_INLINE void WriteBits(__mivec nbits, __mivec bits_lo,
 
   auto bits0_64_lo = _mmsi(and)(bits0_32, _mm(set1_epi64x)(0xFFFFFFFF));
   auto bits1_64_lo = _mmsi(and)(bits1_32, _mm(set1_epi64x)(0xFFFFFFFF));
+#ifdef __AVX2__
   auto bits0_64_hi =
       _mm(sllv_epi64)(_mm(srli_epi64)(bits0_32, 32), nbits0_64_lo);
   auto bits1_64_hi =
       _mm(sllv_epi64)(_mm(srli_epi64)(bits1_32, 32), nbits1_64_lo);
+#else
+  // just do two shifts for SSE variant
+  auto bits0_64_hi = _mm(srli_epi64)(bits0_32, 32);
+  auto bits1_64_hi = _mm(srli_epi64)(bits1_32, 32);
+  
+  bits0_64_hi = _mm_blend_epi16(
+    _mm_sll_epi64(bits0_64_hi, nbits0_64_lo),
+    _mm_sll_epi64(bits0_64_hi, _mm_unpackhi_epi64(nbits0_64_lo, nbits0_64_lo)),
+    0xf0
+  );
+  bits1_64_hi = _mm_blend_epi16(
+    _mm_sll_epi64(bits1_64_hi, nbits1_64_lo),
+    _mm_sll_epi64(bits1_64_hi, _mm_unpackhi_epi64(nbits1_64_lo, nbits1_64_lo)),
+    0xf0
+  );
+#endif
 
   auto nbits0_64 = _mm(add_epi64)(nbits0_64_lo, nbits0_64_hi);
   auto nbits1_64 = _mm(add_epi64)(nbits1_64_lo, nbits1_64_hi);
