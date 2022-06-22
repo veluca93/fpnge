@@ -1026,8 +1026,8 @@ void WriteHeader(size_t width, size_t height, size_t bytes_per_channel,
 }
 
 size_t FPNGEEncode(size_t bytes_per_channel, size_t num_channels,
-                   const unsigned char *data, size_t width, size_t row_stride,
-                   size_t height, unsigned char **output) {
+                   const void *data, size_t width, size_t row_stride,
+                   size_t height, void **output) {
   assert(bytes_per_channel == 1 || bytes_per_channel == 2);
   assert(num_channels != 0 && num_channels <= 4);
   size_t bytes_per_line = bytes_per_channel * num_channels * width;
@@ -1070,10 +1070,10 @@ size_t FPNGEEncode(size_t bytes_per_channel, size_t num_channels,
   }
 
   // likely an overestimate
-  *output = (unsigned char *)malloc(1024 + 2 * bytes_per_line * height);
+  *output = malloc(1024 + 2 * bytes_per_line * height);
 
   BitWriter writer;
-  writer.data = *output;
+  writer.data = (unsigned char *)*output;
 
   WriteHeader(width, height, bytes_per_channel, num_channels, &writer);
 
@@ -1093,7 +1093,7 @@ size_t FPNGEEncode(size_t bytes_per_channel, size_t num_channels,
   size_t y1 = height * 130 / 256;
 
   for (size_t y = y0; y < y1; y++) {
-    const unsigned char *current_row_in = data + row_stride * y;
+    const unsigned char *current_row_in = (const unsigned char *)data + row_stride * y;
     unsigned char *current_row_buf =
         aligned_buf_ptr + (y % 2 ? bytes_per_line_buf : 0);
     const unsigned char *top_buf =
@@ -1127,7 +1127,7 @@ size_t FPNGEEncode(size_t bytes_per_channel, size_t num_channels,
   uint32_t s1 = 1;
   uint32_t s2 = 0;
   for (size_t y = 0; y < height; y++) {
-    const unsigned char *current_row_in = data + row_stride * y;
+    const unsigned char *current_row_in = (const unsigned char *)data + row_stride * y;
     unsigned char *current_row_buf =
         aligned_buf_ptr + (y % 2 ? bytes_per_line_buf : 0);
     const unsigned char *top_buf =
