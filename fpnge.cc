@@ -1025,6 +1025,7 @@ void WriteHeader(size_t width, size_t height, size_t bytes_per_channel,
   AppendBE32(crc, writer);
 }
 
+extern "C"
 size_t FPNGEEncode(size_t bytes_per_channel, size_t num_channels,
                    const void *data, size_t width, size_t row_stride,
                    size_t height, void *output) {
