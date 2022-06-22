@@ -87,14 +87,13 @@ int main(int argc, char **argv) {
   }
 
   size_t encoded_size = 0;
-  unsigned char *encoded = nullptr;
+  void *encoded = malloc(FPNGEOutputAllocSize(1, num_c, width, height));
 
   if (num_reps > 0) {
     auto start = std::chrono::high_resolution_clock::now();
     for (size_t _ = 0; _ < num_reps; _++) {
-      free(encoded);
       encoded_size =
-          FPNGEEncode(1, num_c, png, width, width * num_c, height, &encoded);
+          FPNGEEncode(1, num_c, png, width, width * num_c, height, encoded);
     }
     auto stop = std::chrono::high_resolution_clock::now();
     float us =
@@ -107,7 +106,7 @@ int main(int argc, char **argv) {
             encoded_size * 8.0 / float(width) / float(height));
   } else {
     encoded_size =
-        FPNGEEncode(1, num_c, png, width, width * num_c, height, &encoded);
+        FPNGEEncode(1, num_c, png, width, width * num_c, height, encoded);
   }
 
   FILE *o = fopen(out, "wb");

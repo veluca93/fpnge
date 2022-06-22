@@ -1027,7 +1027,7 @@ void WriteHeader(size_t width, size_t height, size_t bytes_per_channel,
 
 size_t FPNGEEncode(size_t bytes_per_channel, size_t num_channels,
                    const void *data, size_t width, size_t row_stride,
-                   size_t height, void **output) {
+                   size_t height, void *output) {
   assert(bytes_per_channel == 1 || bytes_per_channel == 2);
   assert(num_channels != 0 && num_channels <= 4);
   size_t bytes_per_line = bytes_per_channel * num_channels * width;
@@ -1069,11 +1069,8 @@ size_t FPNGEEncode(size_t bytes_per_channel, size_t num_channels,
     }
   }
 
-  // likely an overestimate
-  *output = malloc(1024 + 2 * bytes_per_line * height);
-
   BitWriter writer;
-  writer.data = (unsigned char *)*output;
+  writer.data = (unsigned char *)output;
 
   WriteHeader(width, height, bytes_per_channel, num_channels, &writer);
 
