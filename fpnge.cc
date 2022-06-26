@@ -669,7 +669,7 @@ FORCE_INLINE void WriteBits(MIVEC nbits, MIVEC bits_lo, MIVEC bits_hi,
   // emulate variable shift by abusing float exponents
   // this works because Huffman symbols are not allowed to exceed 15 bits, so
   // will fit within a float's mantissa and (number << 15) won't overflow when
-  // converted back to a signed int first, convert to float
+  // converted back to a signed int
   auto bits0_32_hi =
       _mm_castps_si128(MM(cvtepi32_ps)(MM(srli_epi32)(bits0, 16)));
   auto bits1_32_hi =
@@ -679,7 +679,6 @@ FORCE_INLINE void WriteBits(MIVEC nbits, MIVEC bits_lo, MIVEC bits_hi,
   bits0_32_hi = MM(add_epi32)(bits0_32_hi, MM(slli_epi32)(nbits0_32_lo, 23));
   bits1_32_hi = MM(add_epi32)(bits1_32_hi, MM(slli_epi32)(nbits1_32_lo, 23));
 
-  // convert back to int
   bits0_32_hi = MM(cvtps_epi32)(_mm_castsi128_ps(bits0_32_hi));
   bits1_32_hi = MM(cvtps_epi32)(_mm_castsi128_ps(bits1_32_hi));
 #endif
