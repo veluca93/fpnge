@@ -275,7 +275,7 @@ struct BitWriter {
     bits_in_buffer += count;
     memcpy(data + bytes_written, &buffer, 8);
     size_t bytes_in_buffer = bits_in_buffer / 8;
-    bits_in_buffer -= bytes_in_buffer * 8;
+    bits_in_buffer &= 7;
     buffer >>= bytes_in_buffer * 8;
     bytes_written += bytes_in_buffer;
   }
@@ -751,7 +751,7 @@ FORCE_INLINE void WriteBits(MIVEC nbits, MIVEC bits_lo, MIVEC bits_hi,
     bits_in_buffer += count;
     memcpy(writer->data + bytes_written, &buffer, 8);
     size_t bytes_in_buffer = bits_in_buffer / 8;
-    bits_in_buffer -= bytes_in_buffer * 8;
+    bits_in_buffer &= 7;
     buffer >>= bytes_in_buffer * 8;
     bytes_written += bytes_in_buffer;
   }
