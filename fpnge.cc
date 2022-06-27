@@ -511,8 +511,8 @@ ProcessRow(size_t bytes_per_line_buf, const unsigned char *mask,
       auto min_ac = MM(min_epu8)(a, c);
       auto pa = MM(sub_epi8)(MM(max_epu8)(b, c), min_bc);
       auto pb = MM(sub_epi8)(MM(max_epu8)(a, c), min_ac);
-      // pc = |b-c + a-c| = |pa-pb|, unless a>c>b or b>c>a, in which case, pc
-      // isn't used
+      // pc = |(b-c) + (a-c)| = |pa-pb|, unless a>c>b or b>c>a, in which case,
+      // pc isn't used
       auto min_pab = MM(min_epu8)(pa, pb);
       auto pc = MM(sub_epi8)(MM(max_epu8)(pa, pb), min_pab);
       pc = MMSI(or)(
