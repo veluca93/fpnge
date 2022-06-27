@@ -120,6 +120,6 @@ int main(int argc, char **argv) {
   fclose(o);
   free(png);
   free(encoded);
-  
+
   return 0;
 }
