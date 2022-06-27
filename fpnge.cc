@@ -20,7 +20,7 @@
 #include <string.h>
 #include <vector>
 
-#ifdef _MSC_VER
+#if defined(_MSC_VER) && !defined(__clang__)
 #define FORCE_INLINE_LAMBDA [[msvc::forceinline]]
 #define FORCE_INLINE __forceinline
 static FORCE_INLINE unsigned BSF32(unsigned v) {
