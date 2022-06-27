@@ -21,7 +21,8 @@
 #include <vector>
 
 #ifdef _MSC_VER
-#define FORCE_INLINE [[msvc::forceinline]]
+#define FORCE_INLINE_LAMBDA [[msvc::forceinline]]
+#define FORCE_INLINE __forceinline
 static FORCE_INLINE unsigned BSF32(unsigned v) {
   unsigned long idx;
   _BitScanForward(&idx, v);
@@ -29,7 +30,8 @@ static FORCE_INLINE unsigned BSF32(unsigned v) {
 }
 #define __SSE4_1__ 1
 #else
-#define FORCE_INLINE __attribute__((always_inline))
+#define FORCE_INLINE_LAMBDA __attribute__((always_inline))
+#define FORCE_INLINE __attribute__((always_inline)) inline
 #define BSF32 __builtin_ctzl
 #endif
 
@@ -108,15 +110,15 @@ struct HuffmanTable {
       precision = std::max<size_t>(max_limit[i], precision);
     }
     uint64_t infty = freqsum * precision;
-    std::vector<uint64_t> dynp(((1 << precision) + 1) * (n + 1), infty);
+    std::vector<uint64_t> dynp(((1U << precision) + 1) * (n + 1), infty);
     auto d = [&](size_t sym, size_t off) -> uint64_t & {
       return dynp[sym * ((1 << precision) + 1) + off];
     };
     d(0, 0) = 0;
     for (size_t sym = 0; sym < n; sym++) {
       for (size_t bits = min_limit[sym]; bits <= max_limit[sym]; bits++) {
-        size_t off_delta = 1 << (precision - bits);
-        for (size_t off = 0; off + off_delta <= (1 << precision); off++) {
+        size_t off_delta = 1U << (precision - bits);
+        for (size_t off = 0; off + off_delta <= (1U << precision); off++) {
           d(sym + 1, off + off_delta) = std::min(
               d(sym, off) + freqs[sym] * bits, d(sym + 1, off + off_delta));
         }
@@ -124,12 +126,12 @@ struct HuffmanTable {
     }
 
     size_t sym = n;
-    size_t off = 1 << precision;
+    size_t off = 1U << precision;
 
     while (sym-- > 0) {
       assert(off > 0);
       for (size_t bits = min_limit[sym]; bits <= max_limit[sym]; bits++) {
-        size_t off_delta = 1 << (precision - bits);
+        size_t off_delta = 1U << (precision - bits);
         if (off_delta <= off &&
             d(sym + 1, off) == d(sym, off - off_delta) + freqs[sym] * bits) {
           off -= off_delta;
@@ -249,7 +251,7 @@ struct HuffmanTable {
     mid_nbits = nbits[16];
     mid_lowbits[0] = mid_lowbits[15] = 0;
     for (size_t i = 16; i < 240; i += 16) {
-      mid_lowbits[i / 16] = bits[i] & ((1 << (mid_nbits - 4)) - 1);
+      mid_lowbits[i / 16] = bits[i] & ((1U << (mid_nbits - 4)) - 1);
     }
     for (size_t i = 16; i < 240; i++) {
       assert(nbits[i] == mid_nbits);
@@ -259,7 +261,7 @@ struct HuffmanTable {
     end_bits = bits[256];
     // Construct lz77 lookup tables.
     for (size_t i = 0; i < 29; i++) {
-      for (size_t j = 0; j < (1 << kLZ77NBits[i]); j++) {
+      for (size_t j = 0; j < (1U << kLZ77NBits[i]); j++) {
         lz77_length_nbits[kLZ77Base[i] + j] = nbits[257 + i] + kLZ77NBits[i];
         lz77_length_sym[kLZ77Base[i] + j] = 257 + i;
         lz77_length_bits[kLZ77Base[i] + j] =
@@ -548,7 +550,7 @@ ProcessRow(size_t bytes_per_line_buf, const unsigned char *mask,
     auto pdatais0 = MM(cmpeq_epi8)(pdata, MMSI(setzero)());
     auto isnot0 = MMSI(andnot)(pdatais0, maskv);
 
-    auto next0run =
+    unsigned next0run =
 #ifdef __AVX2__
         _tzcnt_u32(MM(movemask_epi8)(isnot0));
 #else
@@ -597,7 +599,7 @@ void TryPredictor(size_t bytes_per_line_buf, const unsigned char *mask,
   size_t cost_rle = 0;
   MIVEC cost_direct = MMSI(setzero)();
   auto cost_chunk_cb = [&](const uint8_t *predicted_data,
-                           const uint8_t *mask) FORCE_INLINE {
+                           const uint8_t *mask) FORCE_INLINE_LAMBDA {
     auto bytes = MMSI(load)((MIVEC *)predicted_data);
 
     auto data_for_lut = MMSI(and)(MM(set1_epi8)(0xF), bytes);
