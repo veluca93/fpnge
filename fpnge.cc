@@ -639,6 +639,8 @@ FORCE_INLINE void WriteBits(MIVEC nbits, MIVEC bits_lo, MIVEC bits_hi,
                             size_t mid_lo_nbits, BitWriter *writer) {
 
   // Merge bits_lo and bits_hi in 16-bit "bits".
+  auto nbits0 = MM(unpacklo_epi8)(nbits, MMSI(setzero)());
+  auto nbits1 = MM(unpackhi_epi8)(nbits, MMSI(setzero)());
   MIVEC bits0, bits1;
   if (mid_lo_nbits == 8) {
     bits0 = MM(unpacklo_epi8)(bits_lo, bits_hi);
@@ -688,19 +690,18 @@ FORCE_INLINE void WriteBits(MIVEC nbits, MIVEC bits_lo, MIVEC bits_hi,
   auto bits1_32 = MMSI(or)(bits1_32_lo, bits1_32_hi);
 
   // 32 -> 64
+  auto nbits0_64_lo = MMSI(and)(nbits0_32, MM(set1_epi64x)(0xFF));
+  auto nbits1_64_lo = MMSI(and)(nbits1_32, MM(set1_epi64x)(0xFF));
   auto nbits0_64_hi = MM(srli_epi64)(nbits0_32, 32);
   auto nbits1_64_hi = MM(srli_epi64)(nbits1_32, 32);
 #ifdef __AVX2__
-  auto nbits0_64_lo = MM(subs_epu8)(MM(set1_epi32)(32), nbits0_32);
-  auto nbits1_64_lo = MM(subs_epu8)(MM(set1_epi32)(32), nbits1_32);
-  bits0 = MM(sllv_epi32)(bits0, nbits0_64_lo);
-  bits1 = MM(sllv_epi32)(bits1, nbits1_64_lo);
-  bits0 = MM(srlv_epi64)(bits0, nbits0_64_lo);
-  bits1 = MM(srlv_epi64)(bits1, nbits1_64_lo);
+  auto nbits_inv0_64_lo = MM(subs_epu8)(MM(set1_epi64x)(32), nbits0_32);
+  auto nbits_inv1_64_lo = MM(subs_epu8)(MM(set1_epi64x)(32), nbits1_32);
+  bits0 = MM(sllv_epi32)(bits0_32, nbits_inv0_64_lo);
+  bits1 = MM(sllv_epi32)(bits1_32, nbits_inv1_64_lo);
+  bits0 = MM(srlv_epi64)(bits0, nbits_inv0_64_lo);
+  bits1 = MM(srlv_epi64)(bits1, nbits_inv1_64_lo);
 #else
-  auto nbits0_64_lo = MMSI(and)(nbits0_32, MM(set1_epi64x)(0xFF));
-  auto nbits1_64_lo = MMSI(and)(nbits1_32, MM(set1_epi64x)(0xFF));
-
   // just do two shifts for SSE variant
   auto bits0_64_lo = MMSI(and)(bits0_32, MM(set1_epi64x)(0xFFFFFFFF));
   auto bits1_64_lo = MMSI(and)(bits1_32, MM(set1_epi64x)(0xFFFFFFFF));
