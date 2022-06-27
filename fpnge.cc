@@ -70,7 +70,7 @@ static constexpr uint16_t kLZ77Base[29] = {
     3,  4,  5,  6,  7,  8,  9,  10, 11,  13,  15,  17,  19,  23, 27,
     31, 35, 43, 51, 59, 67, 83, 99, 115, 131, 163, 195, 227, 258};
 
-uint16_t BitReverse(size_t nbits, uint16_t bits) {
+static uint16_t BitReverse(size_t nbits, uint16_t bits) {
   uint16_t rev16 = (kBitReverseNibbleLookup[bits & 0xF] << 12) |
                    (kBitReverseNibbleLookup[(bits >> 4) & 0xF] << 8) |
                    (kBitReverseNibbleLookup[(bits >> 8) & 0xF] << 4) |
@@ -295,8 +295,9 @@ struct BitWriter {
   uint64_t buffer = 0;
 };
 
-void WriteHuffmanCode(uint32_t &dist_nbits, uint32_t &dist_bits,
-                      const HuffmanTable &table, BitWriter *__restrict writer) {
+static void WriteHuffmanCode(uint32_t &dist_nbits, uint32_t &dist_bits,
+                             const HuffmanTable &table,
+                             BitWriter *__restrict writer) {
   dist_nbits = 1;
   dist_bits = 0;
 
@@ -364,7 +365,8 @@ constexpr unsigned kCrcTable[] = {
     0x54de5729, 0x23d967bf, 0xb3667a2e, 0xc4614ab8, 0x5d681b02, 0x2a6f2b94,
     0xb40bbe37, 0xc30c8ea1, 0x5a05df1b, 0x2d02ef8d};
 
-unsigned long update_crc(unsigned long crc, const unsigned char *buf, int len) {
+static unsigned long update_crc(unsigned long crc, const unsigned char *buf,
+                                int len) {
   static const uint64_t k1k2[] = {0x1'5444'2BD4ULL, 0x1'C6E4'1596ULL};
   static const uint64_t k3k4[] = {0x1'7519'97D0ULL, 0x0'CCAA'009EULL};
   static const uint64_t k5k6[] = {0x1'63CD'6124ULL, 0x0'0000'0000ULL};
@@ -449,20 +451,20 @@ unsigned long update_crc(unsigned long crc, const unsigned char *buf, int len) {
   return c;
 }
 
-unsigned long compute_crc(const unsigned char *buf, int len) {
+static unsigned long compute_crc(const unsigned char *buf, int len) {
   return update_crc(0xffffffffL, buf, len) ^ 0xffffffffL;
 }
 
 constexpr unsigned kAdler32Mod = 65521;
 
-void UpdateAdler32(uint32_t &s1, uint32_t &s2, uint8_t byte) {
+static void UpdateAdler32(uint32_t &s1, uint32_t &s2, uint8_t byte) {
   s1 += byte;
   s2 += s1;
   s1 %= kAdler32Mod;
   s2 %= kAdler32Mod;
 }
 
-uint32_t hadd(MIVEC v) {
+static uint32_t hadd(MIVEC v) {
   auto sum =
 #ifdef __AVX2__
       _mm_add_epi32(_mm256_castsi256_si128(v), _mm256_extracti128_si256(v, 1));
@@ -480,7 +482,7 @@ uint32_t hadd(MIVEC v) {
 }
 
 template <size_t predictor, typename CB, typename CB_ADL, typename CB_RLE>
-FORCE_INLINE void
+static FORCE_INLINE void
 ProcessRow(size_t bytes_per_line_buf, const unsigned char *mask,
            const unsigned char *current_row_buf, const unsigned char *top_buf,
            const unsigned char *left_buf, const unsigned char *topleft_buf,
@@ -574,7 +576,7 @@ ProcessRow(size_t bytes_per_line_buf, const unsigned char *mask,
   }
 }
 
-template <typename CB> void ForAllRLESymbols(size_t length, CB &&cb) {
+template <typename CB> static void ForAllRLESymbols(size_t length, CB &&cb) {
   assert(length >= 4);
   length -= 1;
 
@@ -592,11 +594,12 @@ template <typename CB> void ForAllRLESymbols(size_t length, CB &&cb) {
 }
 
 template <size_t pred>
-void TryPredictor(size_t bytes_per_line_buf, const unsigned char *mask,
-                  const unsigned char *current_row_buf,
-                  const unsigned char *top_buf, const unsigned char *left_buf,
-                  const unsigned char *topleft_buf, const HuffmanTable &table,
-                  size_t &best_cost, uint8_t &predictor, size_t dist_nbits) {
+static void
+TryPredictor(size_t bytes_per_line_buf, const unsigned char *mask,
+             const unsigned char *current_row_buf, const unsigned char *top_buf,
+             const unsigned char *left_buf, const unsigned char *topleft_buf,
+             const HuffmanTable &table, size_t &best_cost, uint8_t &predictor,
+             size_t dist_nbits) {
   size_t cost_rle = 0;
   MIVEC cost_direct = MMSI(setzero)();
   auto cost_chunk_cb = [&](const uint8_t *predicted_data,
@@ -641,8 +644,9 @@ void TryPredictor(size_t bytes_per_line_buf, const unsigned char *mask,
 }
 
 // Either bits_hi is empty, or bits_lo contains exactly mid_lo_nbits bits.
-FORCE_INLINE void WriteBits(MIVEC nbits, MIVEC bits_lo, MIVEC bits_hi,
-                            size_t mid_lo_nbits, BitWriter *__restrict writer) {
+static FORCE_INLINE void WriteBits(MIVEC nbits, MIVEC bits_lo, MIVEC bits_hi,
+                                   size_t mid_lo_nbits,
+                                   BitWriter *__restrict writer) {
 
   // Merge bits_lo and bits_hi in 16-bit "bits".
   auto nbits0 = MM(unpacklo_epi8)(nbits, MMSI(setzero)());
@@ -746,14 +750,14 @@ FORCE_INLINE void WriteBits(MIVEC nbits, MIVEC bits_lo, MIVEC bits_hi,
   }
 }
 
-void EncodeOneRow(size_t bytes_per_line_buf,
-                  const uint8_t *aligned_adler_mul_buf_ptr,
-                  const unsigned char *mask,
-                  const unsigned char *current_row_buf,
-                  const unsigned char *top_buf, const unsigned char *left_buf,
-                  const unsigned char *topleft_buf, const HuffmanTable &table,
-                  uint32_t &s1, uint32_t &s2, size_t dist_nbits,
-                  size_t dist_bits, BitWriter *__restrict writer) {
+static void
+EncodeOneRow(size_t bytes_per_line_buf,
+             const uint8_t *aligned_adler_mul_buf_ptr,
+             const unsigned char *mask, const unsigned char *current_row_buf,
+             const unsigned char *top_buf, const unsigned char *left_buf,
+             const unsigned char *topleft_buf, const HuffmanTable &table,
+             uint32_t &s1, uint32_t &s2, size_t dist_nbits, size_t dist_bits,
+             BitWriter *__restrict writer) {
 #ifndef FPNGE_FIXED_PREDICTOR
   uint8_t predictor;
   size_t best_cost = ~0U;
@@ -898,7 +902,7 @@ void EncodeOneRow(size_t bytes_per_line_buf,
   flush_adler();
 }
 
-void CollectSymbolCounts(
+static void CollectSymbolCounts(
     size_t bytes_per_line_buf, const uint8_t *aligned_adler_mul_buf_ptr,
     const unsigned char *mask, const unsigned char *current_row_buf,
     const unsigned char *top_buf, const unsigned char *left_buf,
@@ -951,15 +955,15 @@ void CollectSymbolCounts(
 #endif
 }
 
-void AppendBE32(size_t value, BitWriter *__restrict writer) {
+static void AppendBE32(size_t value, BitWriter *__restrict writer) {
   writer->Write(8, value >> 24);
   writer->Write(8, (value >> 16) & 0xFF);
   writer->Write(8, (value >> 8) & 0xFF);
   writer->Write(8, value & 0xFF);
 }
 
-void WriteHeader(size_t width, size_t height, size_t bytes_per_channel,
-                 size_t num_channels, BitWriter *__restrict writer) {
+static void WriteHeader(size_t width, size_t height, size_t bytes_per_channel,
+                        size_t num_channels, BitWriter *__restrict writer) {
   constexpr uint8_t kPNGHeader[8] = {137, 80, 78, 71, 13, 10, 26, 10};
   for (size_t i = 0; i < 8; i++) {
     writer->Write(8, kPNGHeader[i]);
