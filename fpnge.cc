@@ -639,17 +639,19 @@ FORCE_INLINE void WriteBits(MIVEC nbits, MIVEC bits_lo, MIVEC bits_hi,
                             size_t mid_lo_nbits, BitWriter *writer) {
 
   // Merge bits_lo and bits_hi in 16-bit "bits".
-  auto nbits0 = MM(unpacklo_epi8)(nbits, MMSI(setzero)());
-  auto nbits1 = MM(unpackhi_epi8)(nbits, MMSI(setzero)());
-  auto bits_lo0 = MM(unpacklo_epi8)(bits_lo, MMSI(setzero)());
-  auto bits_lo1 = MM(unpackhi_epi8)(bits_lo, MMSI(setzero)());
-  auto bits_hi0 = MM(unpacklo_epi8)(bits_hi, MMSI(setzero)());
-  auto bits_hi1 = MM(unpackhi_epi8)(bits_hi, MMSI(setzero)());
+  MIVEC bits0, bits1;
+  if (mid_lo_nbits == 8) {
+    bits0 = MM(unpacklo_epi8)(bits_lo, bits_hi);
+    bits1 = MM(unpackhi_epi8)(bits_lo, bits_hi);
+  } else {
+    auto nbits_shift = _mm_cvtsi32_si128(8 - mid_lo_nbits);
+    auto bits_lo_shifted = MM(sll_epi16)(bits_lo, nbits_shift);
+    bits0 = MM(unpacklo_epi8)(bits_lo_shifted, bits_hi);
+    bits1 = MM(unpackhi_epi8)(bits_lo_shifted, bits_hi);
 
-  auto bits0 = MMSI(or)(
-      MM(mullo_epi16)(MM(set1_epi16)(1 << mid_lo_nbits), bits_hi0), bits_lo0);
-  auto bits1 = MMSI(or)(
-      MM(mullo_epi16)(MM(set1_epi16)(1 << mid_lo_nbits), bits_hi1), bits_lo1);
+    bits0 = MM(srl_epi16)(bits0, nbits_shift);
+    bits1 = MM(srl_epi16)(bits1, nbits_shift);
+  }
 
   // 16 -> 32
   auto nbits0_32_lo = MMSI(and)(nbits0, MM(set1_epi32)(0xFF));
