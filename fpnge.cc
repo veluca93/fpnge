@@ -688,18 +688,22 @@ FORCE_INLINE void WriteBits(MIVEC nbits, MIVEC bits_lo, MIVEC bits_hi,
   auto bits1_32 = MMSI(or)(bits1_32_lo, bits1_32_hi);
 
   // 32 -> 64
-  auto nbits0_64_lo = MMSI(and)(nbits0_32, MM(set1_epi64x)(0xFF));
-  auto nbits1_64_lo = MMSI(and)(nbits1_32, MM(set1_epi64x)(0xFF));
   auto nbits0_64_hi = MM(srli_epi64)(nbits0_32, 32);
   auto nbits1_64_hi = MM(srli_epi64)(nbits1_32, 32);
+#ifdef __AVX2__
+  auto nbits0_64_lo = MM(subs_epu8)(MM(set1_epi32)(32), nbits0_32);
+  auto nbits1_64_lo = MM(subs_epu8)(MM(set1_epi32)(32), nbits1_32);
+  bits0 = MM(sllv_epi32)(bits0, nbits0_64_lo);
+  bits1 = MM(sllv_epi32)(bits1, nbits1_64_lo);
+  bits0 = MM(srlv_epi64)(bits0, nbits0_64_lo);
+  bits1 = MM(srlv_epi64)(bits1, nbits1_64_lo);
+#else
+  auto nbits0_64_lo = MMSI(and)(nbits0_32, MM(set1_epi64x)(0xFF));
+  auto nbits1_64_lo = MMSI(and)(nbits1_32, MM(set1_epi64x)(0xFF));
 
+  // just do two shifts for SSE variant
   auto bits0_64_lo = MMSI(and)(bits0_32, MM(set1_epi64x)(0xFFFFFFFF));
   auto bits1_64_lo = MMSI(and)(bits1_32, MM(set1_epi64x)(0xFFFFFFFF));
-#ifdef __AVX2__
-  auto bits0_64_hi = MM(sllv_epi64)(MM(srli_epi64)(bits0_32, 32), nbits0_64_lo);
-  auto bits1_64_hi = MM(sllv_epi64)(MM(srli_epi64)(bits1_32, 32), nbits1_64_lo);
-#else
-  // just do two shifts for SSE variant
   auto bits0_64_hi = MM(srli_epi64)(bits0_32, 32);
   auto bits1_64_hi = MM(srli_epi64)(bits1_32, 32);
 
@@ -713,12 +717,13 @@ FORCE_INLINE void WriteBits(MIVEC nbits, MIVEC bits_lo, MIVEC bits_hi,
       _mm_sll_epi64(bits1_64_hi,
                     _mm_unpackhi_epi64(nbits1_64_lo, nbits1_64_lo)),
       0xf0);
+
+  bits0 = MMSI(or)(bits0_64_lo, bits0_64_hi);
+  bits1 = MMSI(or)(bits1_64_lo, bits1_64_hi);
 #endif
 
   auto nbits0_64 = MM(add_epi64)(nbits0_64_lo, nbits0_64_hi);
   auto nbits1_64 = MM(add_epi64)(nbits1_64_lo, nbits1_64_hi);
-  auto bits0_64 = MMSI(or)(bits0_64_lo, bits0_64_hi);
-  auto bits1_64 = MMSI(or)(bits1_64_lo, bits1_64_hi);
 
   // nbits_a <= 40 as we have at most 10 bits per symbol, so the call to the
   // writer is safe.
@@ -726,8 +731,8 @@ FORCE_INLINE void WriteBits(MIVEC nbits, MIVEC bits_lo, MIVEC bits_hi,
   MMSI(store)((MIVEC *)nbits_a, nbits0_64);
   MMSI(store)((MIVEC *)nbits_a + 1, nbits1_64);
   alignas(SIMD_WIDTH) uint64_t bits_a[SIMD_WIDTH / 4];
-  MMSI(store)((MIVEC *)bits_a, bits0_64);
-  MMSI(store)((MIVEC *)bits_a + 1, bits1_64);
+  MMSI(store)((MIVEC *)bits_a, bits0);
+  MMSI(store)((MIVEC *)bits_a + 1, bits1);
 
 #ifdef __AVX2__
   constexpr uint8_t kPerm[] = {0, 1, 4, 5, 2, 3, 6, 7};
