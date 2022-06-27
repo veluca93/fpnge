@@ -55,7 +55,7 @@ static FORCE_INLINE unsigned BSF32(unsigned v) {
 #error Requires SSE4.1 support minium
 #endif
 
-alignas(32) constexpr uint8_t kBitReverseNibbleLookup[16] = {
+alignas(16) constexpr uint8_t kBitReverseNibbleLookup[16] = {
     0b0000, 0b1000, 0b0100, 0b1100, 0b0010, 0b1010, 0b0110, 0b1110,
     0b0001, 0b1001, 0b0101, 0b1101, 0b0011, 0b1011, 0b0111, 0b1111,
 };
@@ -80,14 +80,14 @@ struct HuffmanTable {
   uint8_t nbits[286];
   uint16_t end_bits;
 
-  alignas(32) uint8_t first16_nbits[16];
-  alignas(32) uint8_t first16_bits[16];
+  alignas(16) uint8_t first16_nbits[16];
+  alignas(16) uint8_t first16_bits[16];
 
-  alignas(32) uint8_t last16_nbits[16];
-  alignas(32) uint8_t last16_bits[16];
+  alignas(16) uint8_t last16_nbits[16];
+  alignas(16) uint8_t last16_bits[16];
 
+  alignas(16) uint8_t mid_lowbits[16];
   uint8_t mid_nbits;
-  alignas(32) uint8_t mid_lowbits[16];
 
   uint32_t lz77_length_nbits[259] = {};
   uint32_t lz77_length_bits[259] = {};
