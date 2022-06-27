@@ -97,8 +97,9 @@ struct HuffmanTable {
 
   // Computes nbits[i] for i <= n, subject to min_limit[i] <= nbits[i] <=
   // max_limit[i], so to minimize sum(nbits[i] * freqs[i]).
-  static void ComputeCodeLengths(uint64_t *freqs, size_t n, uint8_t *min_limit,
-                                 uint8_t *max_limit, uint8_t *nbits) {
+  static void ComputeCodeLengths(const uint64_t *freqs, size_t n,
+                                 uint8_t *min_limit, uint8_t *max_limit,
+                                 uint8_t *nbits) {
     size_t precision = 0;
     uint64_t freqsum = 0;
     for (size_t i = 0; i < n; i++) {
@@ -363,7 +364,7 @@ constexpr unsigned kCrcTable[] = {
     0x54de5729, 0x23d967bf, 0xb3667a2e, 0xc4614ab8, 0x5d681b02, 0x2a6f2b94,
     0xb40bbe37, 0xc30c8ea1, 0x5a05df1b, 0x2d02ef8d};
 
-unsigned long update_crc(unsigned long crc, unsigned char *buf, int len) {
+unsigned long update_crc(unsigned long crc, const unsigned char *buf, int len) {
   static const uint64_t k1k2[] = {0x1'5444'2BD4ULL, 0x1'C6E4'1596ULL};
   static const uint64_t k3k4[] = {0x1'7519'97D0ULL, 0x0'CCAA'009EULL};
   static const uint64_t k5k6[] = {0x1'63CD'6124ULL, 0x0'0000'0000ULL};
@@ -448,7 +449,7 @@ unsigned long update_crc(unsigned long crc, unsigned char *buf, int len) {
   return c;
 }
 
-unsigned long compute_crc(unsigned char *buf, int len) {
+unsigned long compute_crc(const unsigned char *buf, int len) {
   return update_crc(0xffffffffL, buf, len) ^ 0xffffffffL;
 }
 
@@ -481,7 +482,7 @@ uint32_t hadd(MIVEC v) {
 template <size_t predictor, typename CB, typename CB_ADL, typename CB_RLE>
 FORCE_INLINE void
 ProcessRow(size_t bytes_per_line_buf, const unsigned char *mask,
-           unsigned char *current_row_buf, const unsigned char *top_buf,
+           const unsigned char *current_row_buf, const unsigned char *top_buf,
            const unsigned char *left_buf, const unsigned char *topleft_buf,
            CB &&cb, CB_ADL &&cb_adl, CB_RLE &&cb_rle) {
   size_t run = 0;
@@ -592,8 +593,8 @@ template <typename CB> void ForAllRLESymbols(size_t length, CB &&cb) {
 
 template <size_t pred>
 void TryPredictor(size_t bytes_per_line_buf, const unsigned char *mask,
-                  unsigned char *current_row_buf, const unsigned char *top_buf,
-                  const unsigned char *left_buf,
+                  const unsigned char *current_row_buf,
+                  const unsigned char *top_buf, const unsigned char *left_buf,
                   const unsigned char *topleft_buf, const HuffmanTable &table,
                   size_t &best_cost, uint8_t &predictor, size_t dist_nbits) {
   size_t cost_rle = 0;
@@ -747,7 +748,8 @@ FORCE_INLINE void WriteBits(MIVEC nbits, MIVEC bits_lo, MIVEC bits_hi,
 
 void EncodeOneRow(size_t bytes_per_line_buf,
                   const uint8_t *aligned_adler_mul_buf_ptr,
-                  const unsigned char *mask, unsigned char *current_row_buf,
+                  const unsigned char *mask,
+                  const unsigned char *current_row_buf,
                   const unsigned char *top_buf, const unsigned char *left_buf,
                   const unsigned char *topleft_buf, const HuffmanTable &table,
                   uint32_t &s1, uint32_t &s2, size_t dist_nbits,
@@ -898,7 +900,7 @@ void EncodeOneRow(size_t bytes_per_line_buf,
 
 void CollectSymbolCounts(
     size_t bytes_per_line_buf, const uint8_t *aligned_adler_mul_buf_ptr,
-    const unsigned char *mask, unsigned char *current_row_buf,
+    const unsigned char *mask, const unsigned char *current_row_buf,
     const unsigned char *top_buf, const unsigned char *left_buf,
     const unsigned char *topleft_buf, uint64_t *__restrict symbol_counts) {
 
