@@ -871,10 +871,13 @@ void EncodeOneRow(size_t bytes_per_line_buf,
     });
   };
 
+#ifdef FPNGE_FIXED_PREDICTOR
   if (predictor == 0) {
     ProcessRow<0>(bytes_per_line_buf, mask, current_row_buf, top_buf, left_buf,
                   topleft_buf, encode_chunk_cb, adler_chunk_cb, encode_rle_cb);
-  } else if (predictor == 1) {
+  } else
+#endif
+      if (predictor == 1) {
     ProcessRow<1>(bytes_per_line_buf, mask, current_row_buf, top_buf, left_buf,
                   topleft_buf, encode_chunk_cb, adler_chunk_cb, encode_rle_cb);
   } else if (predictor == 2) {
@@ -883,7 +886,7 @@ void EncodeOneRow(size_t bytes_per_line_buf,
   } else if (predictor == 3) {
     ProcessRow<3>(bytes_per_line_buf, mask, current_row_buf, top_buf, left_buf,
                   topleft_buf, encode_chunk_cb, adler_chunk_cb, encode_rle_cb);
-  } else if (predictor == 4) {
+  } else {
     ProcessRow<4>(bytes_per_line_buf, mask, current_row_buf, top_buf, left_buf,
                   topleft_buf, encode_chunk_cb, adler_chunk_cb, encode_rle_cb);
   }
