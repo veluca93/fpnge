@@ -602,6 +602,8 @@ void TryPredictor(size_t bytes_per_line_buf, const unsigned char *mask,
     auto bytes = MMSI(load)((MIVEC *)predicted_data);
 
     auto data_for_lut = MMSI(and)(MM(set1_epi8)(0xF), bytes);
+    // get a mask of `bytes` that are between -16 and 15 inclusive
+    // (`-16 <= bytes <= 15` is equivalent to `bytes + 112 > 95`)
     auto use_lowhi = MM(cmpgt_epi8)(MM(add_epi8)(bytes, MM(set1_epi8)(112)),
                                     MM(set1_epi8)(95));
 
@@ -810,6 +812,8 @@ void EncodeOneRow(size_t bytes_per_line_buf,
     auto maskv = MMSI(load)((MIVEC *)mask);
 
     auto data_for_lut = MMSI(and)(MM(set1_epi8)(0xF), bytes);
+    // get a mask of `bytes` that are between -16 and 15 inclusive
+    // (`-16 <= bytes <= 15` is equivalent to `bytes + 112 > 95`)
     auto use_lowhi = MM(cmpgt_epi8)(MM(add_epi8)(bytes, MM(set1_epi8)(112)),
                                     MM(set1_epi8)(95));
     auto data_for_midlut =
