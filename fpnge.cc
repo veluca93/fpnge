@@ -1038,7 +1038,7 @@ extern "C" size_t FPNGEEncode(size_t bytes_per_channel, size_t num_channels,
   }
 
   BitWriter writer;
-  writer.data = (unsigned char *)output;
+  writer.data = static_cast<unsigned char *>(output);
 
   WriteHeader(width, height, bytes_per_channel, num_channels, &writer);
 
@@ -1059,7 +1059,7 @@ extern "C" size_t FPNGEEncode(size_t bytes_per_channel, size_t num_channels,
 
   for (size_t y = y0; y < y1; y++) {
     const unsigned char *current_row_in =
-        (const unsigned char *)data + row_stride * y;
+        static_cast<const unsigned char *>(data) + row_stride * y;
     unsigned char *current_row_buf =
         aligned_buf_ptr + (y % 2 ? bytes_per_line_buf : 0);
     const unsigned char *top_buf =
@@ -1094,7 +1094,7 @@ extern "C" size_t FPNGEEncode(size_t bytes_per_channel, size_t num_channels,
   uint32_t s2 = 0;
   for (size_t y = 0; y < height; y++) {
     const unsigned char *current_row_in =
-        (const unsigned char *)data + row_stride * y;
+        static_cast<const unsigned char *>(data) + row_stride * y;
     unsigned char *current_row_buf =
         aligned_buf_ptr + (y % 2 ? bytes_per_line_buf : 0);
     const unsigned char *top_buf =
