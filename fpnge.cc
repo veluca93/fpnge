@@ -895,6 +895,7 @@ EncodeOneRow(size_t bytes_per_line_buf,
     ProcessRow<3>(bytes_per_line_buf, mask, current_row_buf, top_buf, left_buf,
                   topleft_buf, encode_chunk_cb, adler_chunk_cb, encode_rle_cb);
   } else {
+    assert(predictor == 4);
     ProcessRow<4>(bytes_per_line_buf, mask, current_row_buf, top_buf, left_buf,
                   topleft_buf, encode_chunk_cb, adler_chunk_cb, encode_rle_cb);
   }
