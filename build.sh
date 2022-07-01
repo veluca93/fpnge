@@ -20,7 +20,7 @@ CXX=clang++
 
 [ -f lodepng.cpp ] || wget https://raw.githubusercontent.com/lvandeve/lodepng/8c6a9e30576f07bf470ad6f09458a2dcd7a6a84a/lodepng.cpp
 [ -f lodepng.h ] || wget https://raw.githubusercontent.com/lvandeve/lodepng/8c6a9e30576f07bf470ad6f09458a2dcd7a6a84a/lodepng.h
-[ -f lodepng.o ] || $CXX lodepng.cpp -O3 -mavx2 -o lodepng.o -c
+[ -f lodepng.o ] || $CXX lodepng.cpp -O3 -o lodepng.o -c
 
 $CXX -O3 -march=native -g -Wall "$@" \
   -I. lodepng.o \
