@@ -29,10 +29,25 @@ static FORCE_INLINE unsigned BSF32(unsigned v) {
   return idx;
 }
 #define __SSE4_1__ 1
+#ifdef __AVX2__
+#define __BMI2__ 1
+#endif
 #else
 #define FORCE_INLINE_LAMBDA __attribute__((always_inline))
 #define FORCE_INLINE __attribute__((always_inline)) inline
 #define BSF32 __builtin_ctzl
+#endif
+
+#if defined(__x86_64__) || defined(__amd64__) || defined(__LP64) ||            \
+    defined(_M_X64) || defined(_M_AMD64) ||                                    \
+    (defined(_WIN64) && !defined(_M_ARM64))
+#define PLATFORM_AMD64 1
+#endif
+
+#if defined(__BMI2__) && defined(PLATFORM_AMD64) &&                            \
+    !defined(__tune_znver1__) && !defined(__tune_znver2__) &&                  \
+    !defined(__tune_bdver4__)
+#define FPNGE_USE_PEXT
 #endif
 
 #include <wmmintrin.h> // for CLMUL
@@ -655,6 +670,44 @@ static FORCE_INLINE void WriteBits(MIVEC nbits, MIVEC bits_lo, MIVEC bits_hi,
                                    BitWriter *__restrict writer) {
 
   // Merge bits_lo and bits_hi in 16-bit "bits".
+#ifdef FPNGE_USE_PEXT
+  auto bits0 = MM(unpacklo_epi8)(bits_lo, bits_hi);
+  auto bits1 = MM(unpackhi_epi8)(bits_lo, bits_hi);
+
+  // convert nbits into a mask
+  auto nbits_hi = MM(sub_epi8)(nbits, MM(set1_epi8)(mid_lo_nbits));
+  auto nbits0 = MM(unpacklo_epi8)(nbits, nbits_hi);
+  auto nbits1 = MM(unpackhi_epi8)(nbits, nbits_hi);
+  const auto nbits_to_mask = MM(set_epi32)(
+#if SIMD_WIDTH == 32
+      0xffffffff, 0xffffffff, 0x7f3f1f0f, 0x07030100,
+#endif
+      0xffffffff, 0xffffffff, 0x7f3f1f0f, 0x07030100);
+  auto bitmask0 = MM(shuffle_epi8)(nbits_to_mask, nbits0);
+  auto bitmask1 = MM(shuffle_epi8)(nbits_to_mask, nbits1);
+
+  // aggregate nbits
+  alignas(16) uint16_t nbits_a[SIMD_WIDTH / 4];
+  auto bit_count = MM(maddubs_epi16)(nbits, MM(set1_epi8)(1));
+#ifdef __AVX2__
+  auto bit_count2 = _mm_hadd_epi16(_mm256_castsi256_si128(bit_count),
+                                   _mm256_extracti128_si256(bit_count, 1));
+  bit_count2 = _mm_shuffle_epi32(bit_count2, _MM_SHUFFLE(3, 1, 2, 0));
+  _mm_store_si128((__m128i *)nbits_a, bit_count2);
+#else
+  bit_count = MM(hadd_epi16)(bit_count, bit_count);
+  _mm_storel_epi64((MIVEC *)nbits_a, bit_count);
+#endif
+
+  alignas(SIMD_WIDTH) uint64_t bits_a[SIMD_WIDTH / 4];
+  MMSI(store)((MIVEC *)bits_a, bits0);
+  MMSI(store)((MIVEC *)bits_a + 1, bits1);
+  alignas(SIMD_WIDTH) uint64_t bitmask_a[SIMD_WIDTH / 4];
+  MMSI(store)((MIVEC *)bitmask_a, bitmask0);
+  MMSI(store)((MIVEC *)bitmask_a + 1, bitmask1);
+
+#else
+
   auto nbits0 = MM(unpacklo_epi8)(nbits, MMSI(setzero)());
   auto nbits1 = MM(unpackhi_epi8)(nbits, MMSI(setzero)());
   MIVEC bits0, bits1;
@@ -751,6 +804,8 @@ static FORCE_INLINE void WriteBits(MIVEC nbits, MIVEC bits_lo, MIVEC bits_hi,
   MMSI(store)((MIVEC *)bits_a, bits0);
   MMSI(store)((MIVEC *)bits_a + 1, bits1);
 
+#endif
+
 #ifdef __AVX2__
   constexpr uint8_t kPerm[] = {0, 1, 4, 5, 2, 3, 6, 7};
 #else
@@ -759,6 +814,9 @@ static FORCE_INLINE void WriteBits(MIVEC nbits, MIVEC bits_lo, MIVEC bits_hi,
 
   for (size_t ii = 0; ii < SIMD_WIDTH / 4; ii++) {
     uint64_t bits = bits_a[kPerm[ii]];
+#ifdef FPNGE_USE_PEXT
+    bits = _pext_u64(bits, bitmask_a[kPerm[ii]]);
+#endif
     uint64_t count = nbits_a[kPerm[ii]];
     writer->Write(count, bits);
   }
