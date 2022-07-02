@@ -15,10 +15,25 @@
 #define FPNGE_H
 #include <stdlib.h>
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 // bytes_per_channel = 1/2 for 8-bit and 16-bit. num_channels: 1/2/3/4
 // (G/GA/RGB/RGBA)
 size_t FPNGEEncode(size_t bytes_per_channel, size_t num_channels,
-                   const unsigned char *data, size_t width, size_t row_stride,
-                   size_t height, unsigned char **output);
+                   const void *data, size_t width, size_t row_stride,
+                   size_t height, void *output);
+
+inline size_t FPNGEOutputAllocSize(size_t bytes_per_channel,
+                                   size_t num_channels, size_t width,
+                                   size_t height) {
+  // likely an overestimate
+  return 1024 + 2 * bytes_per_channel * num_channels * width * height;
+}
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif

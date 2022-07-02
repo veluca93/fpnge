@@ -20,8 +20,9 @@
 #include <string.h>
 #include <vector>
 
-#ifdef _MSC_VER
-#define FORCE_INLINE [[msvc::forceinline]]
+#if defined(_MSC_VER) && !defined(__clang__)
+#define FORCE_INLINE_LAMBDA [[msvc::forceinline]]
+#define FORCE_INLINE __forceinline
 static FORCE_INLINE unsigned BSF32(unsigned v) {
   unsigned long idx;
   _BitScanForward(&idx, v);
@@ -29,7 +30,8 @@ static FORCE_INLINE unsigned BSF32(unsigned v) {
 }
 #define __SSE4_1__ 1
 #else
-#define FORCE_INLINE __attribute__((always_inline))
+#define FORCE_INLINE_LAMBDA __attribute__((always_inline))
+#define FORCE_INLINE __attribute__((always_inline)) inline
 #define BSF32 __builtin_ctzl
 #endif
 
@@ -55,7 +57,7 @@ static FORCE_INLINE unsigned BSF32(unsigned v) {
 #error Requires SSE4.1 support minium
 #endif
 
-alignas(32) constexpr uint8_t kBitReverseNibbleLookup[16] = {
+alignas(16) constexpr uint8_t kBitReverseNibbleLookup[16] = {
     0b0000, 0b1000, 0b0100, 0b1100, 0b0010, 0b1010, 0b0110, 0b1110,
     0b0001, 0b1001, 0b0101, 0b1101, 0b0011, 0b1011, 0b0111, 0b1111,
 };
@@ -68,7 +70,7 @@ static constexpr uint16_t kLZ77Base[29] = {
     3,  4,  5,  6,  7,  8,  9,  10, 11,  13,  15,  17,  19,  23, 27,
     31, 35, 43, 51, 59, 67, 83, 99, 115, 131, 163, 195, 227, 258};
 
-uint16_t BitReverse(size_t nbits, uint16_t bits) {
+static uint16_t BitReverse(size_t nbits, uint16_t bits) {
   uint16_t rev16 = (kBitReverseNibbleLookup[bits & 0xF] << 12) |
                    (kBitReverseNibbleLookup[(bits >> 4) & 0xF] << 8) |
                    (kBitReverseNibbleLookup[(bits >> 8) & 0xF] << 4) |
@@ -80,14 +82,14 @@ struct HuffmanTable {
   uint8_t nbits[286];
   uint16_t end_bits;
 
-  alignas(32) uint8_t first16_nbits[16];
-  alignas(32) uint8_t first16_bits[16];
+  alignas(16) uint8_t first16_nbits[16];
+  alignas(16) uint8_t first16_bits[16];
 
-  alignas(32) uint8_t last16_nbits[16];
-  alignas(32) uint8_t last16_bits[16];
+  alignas(16) uint8_t last16_nbits[16];
+  alignas(16) uint8_t last16_bits[16];
 
+  alignas(16) uint8_t mid_lowbits[16];
   uint8_t mid_nbits;
-  alignas(32) uint8_t mid_lowbits[16];
 
   uint32_t lz77_length_nbits[259] = {};
   uint32_t lz77_length_bits[259] = {};
@@ -95,8 +97,9 @@ struct HuffmanTable {
 
   // Computes nbits[i] for i <= n, subject to min_limit[i] <= nbits[i] <=
   // max_limit[i], so to minimize sum(nbits[i] * freqs[i]).
-  static void ComputeCodeLengths(uint64_t *freqs, size_t n, uint8_t *min_limit,
-                                 uint8_t *max_limit, uint8_t *nbits) {
+  static void ComputeCodeLengths(const uint64_t *freqs, size_t n,
+                                 uint8_t *min_limit, uint8_t *max_limit,
+                                 uint8_t *nbits) {
     size_t precision = 0;
     uint64_t freqsum = 0;
     for (size_t i = 0; i < n; i++) {
@@ -108,15 +111,15 @@ struct HuffmanTable {
       precision = std::max<size_t>(max_limit[i], precision);
     }
     uint64_t infty = freqsum * precision;
-    std::vector<uint64_t> dynp(((1 << precision) + 1) * (n + 1), infty);
+    std::vector<uint64_t> dynp(((1U << precision) + 1) * (n + 1), infty);
     auto d = [&](size_t sym, size_t off) -> uint64_t & {
       return dynp[sym * ((1 << precision) + 1) + off];
     };
     d(0, 0) = 0;
     for (size_t sym = 0; sym < n; sym++) {
       for (size_t bits = min_limit[sym]; bits <= max_limit[sym]; bits++) {
-        size_t off_delta = 1 << (precision - bits);
-        for (size_t off = 0; off + off_delta <= (1 << precision); off++) {
+        size_t off_delta = 1U << (precision - bits);
+        for (size_t off = 0; off + off_delta <= (1U << precision); off++) {
           d(sym + 1, off + off_delta) = std::min(
               d(sym, off) + freqs[sym] * bits, d(sym + 1, off + off_delta));
         }
@@ -124,12 +127,12 @@ struct HuffmanTable {
     }
 
     size_t sym = n;
-    size_t off = 1 << precision;
+    size_t off = 1U << precision;
 
     while (sym-- > 0) {
       assert(off > 0);
       for (size_t bits = min_limit[sym]; bits <= max_limit[sym]; bits++) {
-        size_t off_delta = 1 << (precision - bits);
+        size_t off_delta = 1U << (precision - bits);
         if (off_delta <= off &&
             d(sym + 1, off) == d(sym, off - off_delta) + freqs[sym] * bits) {
           off -= off_delta;
@@ -249,7 +252,7 @@ struct HuffmanTable {
     mid_nbits = nbits[16];
     mid_lowbits[0] = mid_lowbits[15] = 0;
     for (size_t i = 16; i < 240; i += 16) {
-      mid_lowbits[i / 16] = bits[i] & ((1 << (mid_nbits - 4)) - 1);
+      mid_lowbits[i / 16] = bits[i] & ((1U << (mid_nbits - 4)) - 1);
     }
     for (size_t i = 16; i < 240; i++) {
       assert(nbits[i] == mid_nbits);
@@ -259,7 +262,7 @@ struct HuffmanTable {
     end_bits = bits[256];
     // Construct lz77 lookup tables.
     for (size_t i = 0; i < 29; i++) {
-      for (size_t j = 0; j < (1 << kLZ77NBits[i]); j++) {
+      for (size_t j = 0; j < (1U << kLZ77NBits[i]); j++) {
         lz77_length_nbits[kLZ77Base[i] + j] = nbits[257 + i] + kLZ77NBits[i];
         lz77_length_sym[kLZ77Base[i] + j] = 257 + i;
         lz77_length_bits[kLZ77Base[i] + j] =
@@ -292,8 +295,9 @@ struct BitWriter {
   uint64_t buffer = 0;
 };
 
-void WriteHuffmanCode(uint32_t &dist_nbits, uint32_t &dist_bits,
-                      const HuffmanTable &table, BitWriter *writer) {
+static void WriteHuffmanCode(uint32_t &dist_nbits, uint32_t &dist_bits,
+                             const HuffmanTable &table,
+                             BitWriter *__restrict writer) {
   dist_nbits = 1;
   dist_bits = 0;
 
@@ -361,7 +365,8 @@ constexpr unsigned kCrcTable[] = {
     0x54de5729, 0x23d967bf, 0xb3667a2e, 0xc4614ab8, 0x5d681b02, 0x2a6f2b94,
     0xb40bbe37, 0xc30c8ea1, 0x5a05df1b, 0x2d02ef8d};
 
-unsigned long update_crc(unsigned long crc, unsigned char *buf, int len) {
+static unsigned long update_crc(unsigned long crc, const unsigned char *buf,
+                                int len) {
   static const uint64_t k1k2[] = {0x1'5444'2BD4ULL, 0x1'C6E4'1596ULL};
   static const uint64_t k3k4[] = {0x1'7519'97D0ULL, 0x0'CCAA'009EULL};
   static const uint64_t k5k6[] = {0x1'63CD'6124ULL, 0x0'0000'0000ULL};
@@ -446,20 +451,20 @@ unsigned long update_crc(unsigned long crc, unsigned char *buf, int len) {
   return c;
 }
 
-unsigned long compute_crc(unsigned char *buf, int len) {
+static unsigned long compute_crc(const unsigned char *buf, int len) {
   return update_crc(0xffffffffL, buf, len) ^ 0xffffffffL;
 }
 
 constexpr unsigned kAdler32Mod = 65521;
 
-void UpdateAdler32(uint32_t &s1, uint32_t &s2, uint8_t byte) {
+static void UpdateAdler32(uint32_t &s1, uint32_t &s2, uint8_t byte) {
   s1 += byte;
   s2 += s1;
   s1 %= kAdler32Mod;
   s2 %= kAdler32Mod;
 }
 
-uint32_t hadd(MIVEC v) {
+static uint32_t hadd(MIVEC v) {
   auto sum =
 #ifdef __AVX2__
       _mm_add_epi32(_mm256_castsi256_si128(v), _mm256_extracti128_si256(v, 1));
@@ -477,9 +482,9 @@ uint32_t hadd(MIVEC v) {
 }
 
 template <size_t predictor, typename CB, typename CB_ADL, typename CB_RLE>
-FORCE_INLINE void
+static FORCE_INLINE void
 ProcessRow(size_t bytes_per_line_buf, const unsigned char *mask,
-           unsigned char *current_row_buf, const unsigned char *top_buf,
+           const unsigned char *current_row_buf, const unsigned char *top_buf,
            const unsigned char *left_buf, const unsigned char *topleft_buf,
            CB &&cb, CB_ADL &&cb_adl, CB_RLE &&cb_rle) {
   size_t run = 0;
@@ -549,7 +554,7 @@ ProcessRow(size_t bytes_per_line_buf, const unsigned char *mask,
     auto pdatais0 = MM(cmpeq_epi8)(pdata, MMSI(setzero)());
     auto isnot0 = MMSI(andnot)(pdatais0, maskv);
 
-    auto next0run =
+    unsigned next0run =
 #ifdef __AVX2__
         _tzcnt_u32(MM(movemask_epi8)(isnot0));
 #else
@@ -572,7 +577,7 @@ ProcessRow(size_t bytes_per_line_buf, const unsigned char *mask,
   }
 }
 
-template <typename CB> void ForAllRLESymbols(size_t length, CB &&cb) {
+template <typename CB> static void ForAllRLESymbols(size_t length, CB &&cb) {
   assert(length >= 4);
   length -= 1;
 
@@ -590,15 +595,16 @@ template <typename CB> void ForAllRLESymbols(size_t length, CB &&cb) {
 }
 
 template <size_t pred>
-void TryPredictor(size_t bytes_per_line_buf, const unsigned char *mask,
-                  unsigned char *current_row_buf, const unsigned char *top_buf,
-                  const unsigned char *left_buf,
-                  const unsigned char *topleft_buf, const HuffmanTable &table,
-                  size_t &best_cost, uint8_t &predictor, size_t dist_nbits) {
+static void
+TryPredictor(size_t bytes_per_line_buf, const unsigned char *mask,
+             const unsigned char *current_row_buf, const unsigned char *top_buf,
+             const unsigned char *left_buf, const unsigned char *topleft_buf,
+             const HuffmanTable &table, size_t &best_cost, uint8_t &predictor,
+             size_t dist_nbits) {
   size_t cost_rle = 0;
   MIVEC cost_direct = MMSI(setzero)();
   auto cost_chunk_cb = [&](const uint8_t *predicted_data,
-                           const uint8_t *mask) FORCE_INLINE {
+                           const uint8_t *mask) FORCE_INLINE_LAMBDA {
     auto bytes = MMSI(load)((MIVEC *)predicted_data);
 
     auto data_for_lut = MMSI(and)(MM(set1_epi8)(0xF), bytes);
@@ -637,8 +643,9 @@ void TryPredictor(size_t bytes_per_line_buf, const unsigned char *mask,
 }
 
 // Either bits_hi is empty, or bits_lo contains exactly mid_lo_nbits bits.
-FORCE_INLINE void WriteBits(MIVEC nbits, MIVEC bits_lo, MIVEC bits_hi,
-                            size_t mid_lo_nbits, BitWriter *writer) {
+static FORCE_INLINE void WriteBits(MIVEC nbits, MIVEC bits_lo, MIVEC bits_hi,
+                                   size_t mid_lo_nbits,
+                                   BitWriter *__restrict writer) {
 
   // Merge bits_lo and bits_hi in 16-bit "bits".
   auto nbits0 = MM(unpacklo_epi8)(nbits, MMSI(setzero)());
@@ -743,33 +750,21 @@ FORCE_INLINE void WriteBits(MIVEC nbits, MIVEC bits_lo, MIVEC bits_hi,
   constexpr uint8_t kPerm[] = {0, 1, 2, 3};
 #endif
 
-  // call to WriteBits manually inlined: compiler assumes aliasing may happen.
-  uint64_t buffer = writer->buffer;
-  uint64_t bits_in_buffer = writer->bits_in_buffer;
-  uint64_t bytes_written = writer->bytes_written;
   for (size_t ii = 0; ii < SIMD_WIDTH / 4; ii++) {
     uint64_t bits = bits_a[kPerm[ii]];
     uint64_t count = nbits_a[kPerm[ii]];
-    buffer |= bits << bits_in_buffer;
-    bits_in_buffer += count;
-    memcpy(writer->data + bytes_written, &buffer, 8);
-    size_t bytes_in_buffer = bits_in_buffer / 8;
-    bits_in_buffer &= 7;
-    buffer >>= bytes_in_buffer * 8;
-    bytes_written += bytes_in_buffer;
+    writer->Write(count, bits);
   }
-  writer->buffer = buffer;
-  writer->bits_in_buffer = bits_in_buffer;
-  writer->bytes_written = bytes_written;
 }
 
-void EncodeOneRow(size_t bytes_per_line_buf,
-                  const uint8_t *aligned_adler_mul_buf_ptr,
-                  const unsigned char *mask, unsigned char *current_row_buf,
-                  const unsigned char *top_buf, const unsigned char *left_buf,
-                  const unsigned char *topleft_buf, const HuffmanTable &table,
-                  uint32_t &s1, uint32_t &s2, size_t dist_nbits,
-                  size_t dist_bits, BitWriter *writer) {
+static void
+EncodeOneRow(size_t bytes_per_line_buf,
+             const uint8_t *aligned_adler_mul_buf_ptr,
+             const unsigned char *mask, const unsigned char *current_row_buf,
+             const unsigned char *top_buf, const unsigned char *left_buf,
+             const unsigned char *topleft_buf, const HuffmanTable &table,
+             uint32_t &s1, uint32_t &s2, size_t dist_nbits, size_t dist_bits,
+             BitWriter *__restrict writer) {
 #ifndef FPNGE_FIXED_PREDICTOR
   uint8_t predictor;
   size_t best_cost = ~0U;
@@ -883,10 +878,13 @@ void EncodeOneRow(size_t bytes_per_line_buf,
     });
   };
 
+#ifdef FPNGE_FIXED_PREDICTOR
   if (predictor == 0) {
     ProcessRow<0>(bytes_per_line_buf, mask, current_row_buf, top_buf, left_buf,
                   topleft_buf, encode_chunk_cb, adler_chunk_cb, encode_rle_cb);
-  } else if (predictor == 1) {
+  } else
+#endif
+      if (predictor == 1) {
     ProcessRow<1>(bytes_per_line_buf, mask, current_row_buf, top_buf, left_buf,
                   topleft_buf, encode_chunk_cb, adler_chunk_cb, encode_rle_cb);
   } else if (predictor == 2) {
@@ -895,7 +893,8 @@ void EncodeOneRow(size_t bytes_per_line_buf,
   } else if (predictor == 3) {
     ProcessRow<3>(bytes_per_line_buf, mask, current_row_buf, top_buf, left_buf,
                   topleft_buf, encode_chunk_cb, adler_chunk_cb, encode_rle_cb);
-  } else if (predictor == 4) {
+  } else {
+    assert(predictor == 4);
     ProcessRow<4>(bytes_per_line_buf, mask, current_row_buf, top_buf, left_buf,
                   topleft_buf, encode_chunk_cb, adler_chunk_cb, encode_rle_cb);
   }
@@ -903,11 +902,11 @@ void EncodeOneRow(size_t bytes_per_line_buf,
   flush_adler();
 }
 
-void CollectSymbolCounts(
+static void CollectSymbolCounts(
     size_t bytes_per_line_buf, const uint8_t *aligned_adler_mul_buf_ptr,
-    const unsigned char *mask, unsigned char *current_row_buf,
+    const unsigned char *mask, const unsigned char *current_row_buf,
     const unsigned char *top_buf, const unsigned char *left_buf,
-    const unsigned char *topleft_buf, uint64_t *symbol_counts) {
+    const unsigned char *topleft_buf, uint64_t *__restrict symbol_counts) {
 
   auto encode_chunk_cb = [&](const uint8_t *predicted_data,
                              const uint8_t *mask) {
@@ -956,15 +955,15 @@ void CollectSymbolCounts(
 #endif
 }
 
-void AppendBE32(size_t value, BitWriter *writer) {
+static void AppendBE32(size_t value, BitWriter *__restrict writer) {
   writer->Write(8, value >> 24);
   writer->Write(8, (value >> 16) & 0xFF);
   writer->Write(8, (value >> 8) & 0xFF);
   writer->Write(8, value & 0xFF);
 }
 
-void WriteHeader(size_t width, size_t height, size_t bytes_per_channel,
-                 size_t num_channels, BitWriter *writer) {
+static void WriteHeader(size_t width, size_t height, size_t bytes_per_channel,
+                        size_t num_channels, BitWriter *__restrict writer) {
   constexpr uint8_t kPNGHeader[8] = {137, 80, 78, 71, 13, 10, 26, 10};
   for (size_t i = 0; i < 8; i++) {
     writer->Write(8, kPNGHeader[i]);
@@ -990,9 +989,9 @@ void WriteHeader(size_t width, size_t height, size_t bytes_per_channel,
   AppendBE32(crc, writer);
 }
 
-size_t FPNGEEncode(size_t bytes_per_channel, size_t num_channels,
-                   const unsigned char *data, size_t width, size_t row_stride,
-                   size_t height, unsigned char **output) {
+extern "C" size_t FPNGEEncode(size_t bytes_per_channel, size_t num_channels,
+                              const void *data, size_t width, size_t row_stride,
+                              size_t height, void *output) {
   assert(bytes_per_channel == 1 || bytes_per_channel == 2);
   assert(num_channels != 0 && num_channels <= 4);
   size_t bytes_per_line = bytes_per_channel * num_channels * width;
@@ -1036,11 +1035,8 @@ size_t FPNGEEncode(size_t bytes_per_channel, size_t num_channels,
     }
   }
 
-  // likely an overestimate
-  *output = (unsigned char *)malloc(1024 + 2 * bytes_per_line * height);
-
   BitWriter writer;
-  writer.data = *output;
+  writer.data = static_cast<unsigned char *>(output);
 
   WriteHeader(width, height, bytes_per_channel, num_channels, &writer);
 
@@ -1060,7 +1056,8 @@ size_t FPNGEEncode(size_t bytes_per_channel, size_t num_channels,
   size_t y1 = height * 130 / 256;
 
   for (size_t y = y0; y < y1; y++) {
-    const unsigned char *current_row_in = data + row_stride * y;
+    const unsigned char *current_row_in =
+        static_cast<const unsigned char *>(data) + row_stride * y;
     unsigned char *current_row_buf =
         aligned_buf_ptr + (y % 2 ? bytes_per_line_buf : 0);
     const unsigned char *top_buf =
@@ -1094,7 +1091,8 @@ size_t FPNGEEncode(size_t bytes_per_channel, size_t num_channels,
   uint32_t s1 = 1;
   uint32_t s2 = 0;
   for (size_t y = 0; y < height; y++) {
-    const unsigned char *current_row_in = data + row_stride * y;
+    const unsigned char *current_row_in =
+        static_cast<const unsigned char *>(data) + row_stride * y;
     unsigned char *current_row_buf =
         aligned_buf_ptr + (y % 2 ? bytes_per_line_buf : 0);
     const unsigned char *top_buf =
