@@ -568,7 +568,7 @@ ProcessRow(size_t bytes_per_line, const unsigned char *current_row_buf,
       run = 0;
       cb(pdata, SIMD_WIDTH);
     }
-    cb_adl(SIMD_WIDTH, pdata, SIMD_WIDTH, i);
+    cb_adl(pdata, SIMD_WIDTH);
   }
   size_t bytes_remaining = bytes_per_line ^ i;
   if (bytes_remaining) {
@@ -587,7 +587,7 @@ ProcessRow(size_t bytes_per_line, const unsigned char *current_row_buf,
       run = 0;
       cb(pdata, bytes_remaining);
     }
-    cb_adl(bytes_remaining, pdata, bytes_remaining, i);
+    cb_adl(pdata, bytes_remaining);
   }
   if (run != 0) {
     cb_rle(run);
@@ -642,8 +642,7 @@ TryPredictor(size_t bytes_per_line, const unsigned char *current_row_buf,
   };
   ProcessRow<pred>(
       bytes_per_line, current_row_buf, top_buf, left_buf, topleft_buf,
-      cost_chunk_cb,
-      [](size_t, const MIVEC, const size_t bytes_in_vec, size_t) {},
+      cost_chunk_cb, [](const MIVEC, size_t) {},
       [&](size_t run) {
         cost_rle += table.first16_nbits[0];
         ForAllRLESymbols(run, [&](size_t len) {
@@ -773,11 +772,10 @@ static FORCE_INLINE void WriteBits(MIVEC nbits, MIVEC bits_lo, MIVEC bits_hi,
 }
 
 static void
-EncodeOneRow(size_t bytes_per_line, const uint8_t *aligned_adler_mul_buf_ptr,
-             const unsigned char *current_row_buf, const unsigned char *top_buf,
-             const unsigned char *left_buf, const unsigned char *topleft_buf,
-             const HuffmanTable &table, uint32_t &s1, uint32_t &s2,
-             size_t dist_nbits, size_t dist_bits,
+EncodeOneRow(size_t bytes_per_line, const unsigned char *current_row_buf,
+             const unsigned char *top_buf, const unsigned char *left_buf,
+             const unsigned char *topleft_buf, const HuffmanTable &table,
+             uint32_t &s1, uint32_t &s2, size_t dist_nbits, size_t dist_bits,
              BitWriter *__restrict writer) {
 #ifndef FPNGE_FIXED_PREDICTOR
   uint8_t predictor;
@@ -858,12 +856,11 @@ EncodeOneRow(size_t bytes_per_line, const uint8_t *aligned_adler_mul_buf_ptr,
     WriteBits(nbits, bits_lo, bits_hi, table.mid_nbits - 4, writer);
   };
 
-  auto adler_chunk_cb = [&](size_t bytes_per_vec, const MIVEC pdata,
-                            const size_t bytes_in_vec, size_t i) {
-    len += bytes_per_vec;
+  auto adler_chunk_cb = [&](const MIVEC pdata, size_t bytes_in_vec) {
+    len += bytes_in_vec;
 
     adler_accum_s2 = MM(add_epi32)(
-        MM(mullo_epi32)(MM(set1_epi32)(bytes_per_vec), adler_accum_s1),
+        MM(mullo_epi32)(MM(set1_epi32)(bytes_in_vec), adler_accum_s1),
         adler_accum_s2);
 
     auto bytes =
@@ -872,7 +869,13 @@ EncodeOneRow(size_t bytes_per_line, const uint8_t *aligned_adler_mul_buf_ptr,
     adler_accum_s1 =
         MM(add_epi32)(adler_accum_s1, MM(sad_epu8)(bytes, MMSI(setzero)()));
 
-    auto muls = MMSI(load)((MIVEC *)(aligned_adler_mul_buf_ptr + i));
+    auto muls = MM(set_epi8)(
+        1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16
+#if SIMD_WIDTH == 32
+        ,
+        17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32
+#endif
+    );
     auto bytesmuls = MM(maddubs_epi16)(bytes, muls);
     adler_accum_s2 = MM(add_epi32)(
         adler_accum_s2, MM(madd_epi16)(bytesmuls, MM(set1_epi16)(1)));
@@ -915,7 +918,6 @@ EncodeOneRow(size_t bytes_per_line, const uint8_t *aligned_adler_mul_buf_ptr,
 }
 
 static void CollectSymbolCounts(size_t bytes_per_line,
-                                const uint8_t *aligned_adler_mul_buf_ptr,
                                 const unsigned char *current_row_buf,
                                 const unsigned char *top_buf,
                                 const unsigned char *left_buf,
@@ -930,7 +932,7 @@ static void CollectSymbolCounts(size_t bytes_per_line,
     }
   };
 
-  auto adler_chunk_cb = [&](size_t, const MIVEC, const size_t, size_t) {};
+  auto adler_chunk_cb = [&](const MIVEC, size_t) {};
 
   auto encode_rle_cb = [&](size_t run) {
     symbol_counts[0] += 1;
@@ -1025,22 +1027,6 @@ extern "C" size_t FPNGEEncode(size_t bytes_per_channel, size_t num_channels,
                          ? (SIMD_WIDTH - (intptr_t)aligned_buf_ptr % SIMD_WIDTH)
                          : 0;
 
-  std::vector<unsigned char> adler_mul_buf(bytes_per_line_buf + SIMD_WIDTH - 1);
-  unsigned char *aligned_adler_mul_buf_ptr = adler_mul_buf.data();
-  aligned_adler_mul_buf_ptr +=
-      (intptr_t)aligned_adler_mul_buf_ptr % SIMD_WIDTH
-          ? (SIMD_WIDTH - (intptr_t)aligned_adler_mul_buf_ptr % SIMD_WIDTH)
-          : 0;
-
-  // Initialize the adler multipliers data.
-  memset(aligned_adler_mul_buf_ptr, 0x01, bytes_per_line);
-  for (size_t i = 0; i < bytes_per_line; i += SIMD_WIDTH) {
-    for (size_t ii = SIMD_WIDTH - 1; ii-- > 0;) {
-      aligned_adler_mul_buf_ptr[i + ii] +=
-          aligned_adler_mul_buf_ptr[i + ii + 1];
-    }
-  }
-
   BitWriter writer;
   writer.data = static_cast<unsigned char *>(output);
 
@@ -1078,9 +1064,8 @@ extern "C" size_t FPNGEEncode(size_t bytes_per_channel, size_t num_channels,
       continue;
     }
 
-    CollectSymbolCounts(bytes_per_line, aligned_adler_mul_buf_ptr,
-                        current_row_buf, top_buf, left_buf, topleft_buf,
-                        symbol_counts);
+    CollectSymbolCounts(bytes_per_line, current_row_buf, top_buf, left_buf,
+                        topleft_buf, symbol_counts);
   }
 
   memset(buf.data(), 0, buf.size());
@@ -1110,9 +1095,9 @@ extern "C" size_t FPNGEEncode(size_t bytes_per_channel, size_t num_channels,
 
     memcpy(current_row_buf, current_row_in, bytes_per_line);
 
-    EncodeOneRow(bytes_per_line, aligned_adler_mul_buf_ptr, current_row_buf,
-                 top_buf, left_buf, topleft_buf, huffman_table, s1, s2,
-                 dist_nbits, dist_bits, &writer);
+    EncodeOneRow(bytes_per_line, current_row_buf, top_buf, left_buf,
+                 topleft_buf, huffman_table, s1, s2, dist_nbits, dist_bits,
+                 &writer);
 
     size_t bytes = (writer.bytes_written - crc_pos) / 64 * 64;
     crc = update_crc(crc, writer.data + crc_pos, bytes);
