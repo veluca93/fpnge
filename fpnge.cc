@@ -877,6 +877,7 @@ EncodeOneRow(size_t bytes_per_line, const unsigned char *current_row_buf,
         17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32
 #endif
     );
+    muls = MM(add_epi8)(muls, MM(set1_epi8)(bytes_in_vec - SIMD_WIDTH));
     auto bytesmuls = MM(maddubs_epi16)(bytes, muls);
     adler_accum_s2 = MM(add_epi32)(
         adler_accum_s2, MM(madd_epi16)(bytesmuls, MM(set1_epi16)(1)));
