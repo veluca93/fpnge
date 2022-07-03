@@ -478,10 +478,10 @@ static uint32_t hadd(MIVEC v) {
 }
 
 template <size_t predictor>
-FORCE_INLINE MIVEC PredictVec(const unsigned char *current_buf,
-                              const unsigned char *top_buf,
-                              const unsigned char *left_buf,
-                              const unsigned char *topleft_buf) {
+static FORCE_INLINE MIVEC PredictVec(const unsigned char *current_buf,
+                                     const unsigned char *top_buf,
+                                     const unsigned char *left_buf,
+                                     const unsigned char *topleft_buf) {
   auto data = MMSI(load)((MIVEC *)(current_buf));
   if (predictor == 0) {
     return data;
@@ -539,16 +539,16 @@ FORCE_INLINE MIVEC PredictVec(const unsigned char *current_buf,
   }
 }
 
-alignas(SIMD_WIDTH) const int32_t _kMaskVec[] = {-1, -1, -1, -1,
+alignas(SIMD_WIDTH) constexpr int32_t _kMaskVec[] = {-1, -1, -1, -1,
 #if SIMD_WIDTH == 32
-                                                 -1, -1, -1, -1, 0, 0, 0, 0,
+                                                     -1, -1, -1, -1, 0, 0, 0, 0,
 #endif
-                                                 0,  0,  0,  0};
+                                                     0,  0,  0,  0};
 const uint8_t *kMaskVec =
     reinterpret_cast<const uint8_t *>(_kMaskVec) + SIMD_WIDTH;
 
 template <size_t predictor, typename CB, typename CB_ADL, typename CB_RLE>
-static FORCE_INLINE void
+static void
 ProcessRow(size_t bytes_per_line, const unsigned char *current_row_buf,
            const unsigned char *top_buf, const unsigned char *left_buf,
            const unsigned char *topleft_buf, CB &&cb, CB_ADL &&cb_adl,
