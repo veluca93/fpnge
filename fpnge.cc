@@ -886,7 +886,7 @@ EncodeOneRow(size_t bytes_per_line_buf,
         MM(shuffle_epi8)(BCAST128(_mm_load_si128((__m128i *)table.mid_lowbits)),
                          data_for_midlut);
 
-    auto bits_mid_hi = MM(shuffle_epi8)(
+    auto bits_hi = MM(shuffle_epi8)(
         BCAST128(_mm_load_si128((__m128i *)kBitReverseNibbleLookup)),
         data_for_lut);
 
@@ -897,11 +897,11 @@ EncodeOneRow(size_t bytes_per_line_buf,
     auto bits_lo = MM(blendv_epi8)(bits_low16, bits_hi16, bytes);
     bits_lo = MM(blendv_epi8)(bits_mid_lo, bits_lo, use_lowhi);
 
+#if !FPNGE_USE_PEXT
     bits_lo = MMSI(and)(bits_lo, maskv);
-    auto bits_hi = MMSI(andnot)(use_lowhi, bits_mid_hi);
-    // maskv doesn't need to explicitly be applied to bits_hi: this is because
-    // bytes past the end of the line are zeroed out, meaning that use_lowhi
-    // would be set for those, and masked out above
+    bits_hi = MMSI(andnot)(use_lowhi, bits_hi);
+    bits_hi = MMSI(and)(bits_hi, maskv);
+#endif
 
     WriteBits(nbits, bits_lo, bits_hi, table.mid_nbits - 4, writer);
   };
