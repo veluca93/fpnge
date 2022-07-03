@@ -904,9 +904,10 @@ EncodeOneRow(size_t bytes_per_line_buf,
     bits_lo = MM(blendv_epi8)(bits_mid_lo, bits_lo, use_lowhi);
 
     bits_lo = MMSI(and)(bits_lo, maskv);
-
-    auto bits_hi = MMSI(and)(
-        bits_mid_hi, MM(cmpeq_epi8)(nbits, MM(set1_epi8)(table.mid_nbits)));
+    auto bits_hi = MMSI(andnot)(use_lowhi, bits_mid_hi);
+    // maskv doesn't need to explicitly be applied to bits_hi: this is because
+    // bytes past the end of the line are zeroed out, meaning that use_lowhi
+    // would be set for those, and masked out above
 
     WriteBits(nbits, bits_lo, bits_hi, table.mid_nbits - 4, writer);
   };
