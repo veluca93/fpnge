@@ -553,11 +553,11 @@ static FORCE_INLINE MIVEC PredictVec(const unsigned char *current_buf,
   }
 }
 
-alignas(SIMD_WIDTH) constexpr int32_t _kMaskVec[] = {-1, -1, -1, -1,
+alignas(SIMD_WIDTH) const int32_t _kMaskVec[] = {0,  0,  0,  0,
 #if SIMD_WIDTH == 32
-                                                     -1, -1, -1, -1, 0, 0, 0, 0,
+                                                 0,  0,  0,  0, -1, -1, -1, -1,
 #endif
-                                                     0,  0,  0,  0};
+                                                 -1, -1, -1, -1};
 const uint8_t *kMaskVec =
     reinterpret_cast<const uint8_t *>(_kMaskVec) + SIMD_WIDTH;
 
@@ -657,10 +657,11 @@ TryPredictor(size_t bytes_per_line, const unsigned char *current_row_buf,
     auto nbits = MM(blendv_epi8)(nbits_low16, nbits_hi16, bytes);
     nbits = MM(blendv_epi8)(MM(set1_epi8)(table.mid_nbits), nbits, use_lowhi);
 
-    nbits = MMSI(and)(nbits, MMSI(loadu)((MIVEC *)(kMaskVec - bytes_in_vec)));
+    auto nbits_discard =
+        MMSI(and)(nbits, MMSI(loadu)((MIVEC *)(kMaskVec - bytes_in_vec)));
 
     cost_direct =
-        MM(add_epi32)(cost_direct, MM(sad_epu8)(nbits, MMSI(setzero)()));
+        MM(add_epi32)(cost_direct, MM(sad_epu8)(nbits, nbits_discard));
   };
   ProcessRow<pred>(
       bytes_per_line, current_row_buf, top_buf, left_buf, topleft_buf,
@@ -970,6 +971,7 @@ EncodeOneRow(size_t bytes_per_line, const unsigned char *current_row_buf,
     auto maskv = MMSI(loadu)((MIVEC *)(kMaskVec - bytes_in_vec));
 
     auto data_for_lut = MMSI(and)(MM(set1_epi8)(0xF), bytes);
+    data_for_lut = MMSI(or)(data_for_lut, maskv);
     // get a mask of `bytes` that are between -16 and 15 inclusive
     // (`-16 <= bytes <= 15` is equivalent to `bytes + 112 > 95`)
     auto use_lowhi = MM(cmpgt_epi8)(MM(add_epi8)(bytes, MM(set1_epi8)(112)),
@@ -999,27 +1001,18 @@ EncodeOneRow(size_t bytes_per_line, const unsigned char *current_row_buf,
           BCAST128(_mm_load_si128((__m128i *)kBitReverseNibbleLookup)),
           data_for_lut);
 
+      use_lowhi = MMSI(or)(use_lowhi, maskv);
       nbits = MM(blendv_epi8)(MM(set1_epi8)(table.mid_nbits), nbits, use_lowhi);
-      nbits = MMSI(and)(nbits, maskv);
-
       bits_lo = MM(blendv_epi8)(bits_mid_lo, bits_lo, use_lowhi);
 
 #if !FPNGE_USE_PEXT
-      bits_lo = MMSI(and)(bits_lo, maskv);
       bits_hi = MMSI(andnot)(use_lowhi, bits_hi);
-      bits_hi = MMSI(and)(bits_hi, maskv);
 #endif
 
       WriteBitsLong(nbits, bits_lo, bits_hi, table.mid_nbits - 4, writer);
     } else {
       // since mid (symbols 16-239) is not present, we can take some shortcuts
       // this is expected to occur frequently if compression is effective
-      nbits = MMSI(and)(nbits, maskv);
-
-#if !FPNGE_USE_PEXT
-      bits_lo = MMSI(and)(bits_lo, maskv);
-#endif
-
       WriteBitsShort(nbits, bits_lo, writer);
     }
   };
@@ -1040,7 +1033,8 @@ EncodeOneRow(size_t bytes_per_line, const unsigned char *current_row_buf,
       adler_accum_s2 = MM(add_epi32)(
           MM(mul_epu32)(MM(set1_epi32)(bytes_in_vec), adler_accum_s1),
           adler_accum_s2);
-      bytes = MMSI(and)(bytes, MMSI(loadu)((MIVEC *)(kMaskVec - bytes_in_vec)));
+      bytes =
+          MMSI(andnot)(MMSI(loadu)((MIVEC *)(kMaskVec - bytes_in_vec)), bytes);
       muls = MM(add_epi8)(muls, MM(set1_epi8)(bytes_in_vec - SIMD_WIDTH));
     } else {
       adler_s1_sum = MM(add_epi32)(adler_s1_sum, adler_accum_s1);
