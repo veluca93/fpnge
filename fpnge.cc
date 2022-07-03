@@ -694,9 +694,6 @@ static FORCE_INLINE void WriteBits(MIVEC nbits, MIVEC bits_lo, MIVEC bits_hi,
   _mm_storel_epi64((__m128i *)nbits_a, bit_count);
 #endif
 
-  alignas(SIMD_WIDTH) uint64_t bits_a[SIMD_WIDTH / 4];
-  MMSI(store)((MIVEC *)bits_a, bits0);
-  MMSI(store)((MIVEC *)bits_a + 1, bits1);
   alignas(SIMD_WIDTH) uint64_t bitmask_a[SIMD_WIDTH / 4];
   MMSI(store)((MIVEC *)bitmask_a, bitmask0);
   MMSI(store)((MIVEC *)bitmask_a + 1, bitmask1);
@@ -789,11 +786,12 @@ static FORCE_INLINE void WriteBits(MIVEC nbits, MIVEC bits_lo, MIVEC bits_hi,
   // writer is safe.
   alignas(SIMD_WIDTH) uint32_t nbits_a[SIMD_WIDTH / 4];
   MMSI(store)((MIVEC *)nbits_a, nbits01);
+
+#endif
+
   alignas(SIMD_WIDTH) uint64_t bits_a[SIMD_WIDTH / 4];
   MMSI(store)((MIVEC *)bits_a, bits0);
   MMSI(store)((MIVEC *)bits_a + 1, bits1);
-
-#endif
 
 #ifdef __AVX2__
   constexpr uint8_t kPerm[] = {0, 1, 4, 5, 2, 3, 6, 7};
