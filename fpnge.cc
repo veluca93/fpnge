@@ -693,7 +693,6 @@ static FORCE_INLINE void WriteBits(MIVEC nbits, MIVEC bits_lo, MIVEC bits_hi,
 #ifdef __AVX2__
   auto bit_count2 = _mm_hadd_epi16(_mm256_castsi256_si128(bit_count),
                                    _mm256_extracti128_si256(bit_count, 1));
-  bit_count2 = _mm_shuffle_epi32(bit_count2, _MM_SHUFFLE(3, 1, 2, 0));
   _mm_store_si128((__m128i *)nbits_a, bit_count2);
 #else
   bit_count = _mm_hadd_epi16(bit_count, bit_count);
@@ -728,8 +727,6 @@ static FORCE_INLINE void WriteBits(MIVEC nbits, MIVEC bits_lo, MIVEC bits_hi,
   // 16 -> 32
   auto nbits0_32_lo = MMSI(and)(nbits0, MM(set1_epi32)(0xFF));
   auto nbits1_32_lo = MMSI(and)(nbits1, MM(set1_epi32)(0xFF));
-  auto nbits0_32_hi = MM(srai_epi32)(nbits0, 16);
-  auto nbits1_32_hi = MM(srai_epi32)(nbits1, 16);
 
   auto bits0_32_lo = MMSI(and)(bits0, MM(set1_epi32)(0xFFFF));
   auto bits1_32_lo = MMSI(and)(bits1, MM(set1_epi32)(0xFFFF));
@@ -754,24 +751,22 @@ static FORCE_INLINE void WriteBits(MIVEC nbits, MIVEC bits_lo, MIVEC bits_hi,
   bits1_32_hi = MM(cvtps_epi32)(_mm_castsi128_ps(bits1_32_hi));
 #endif
 
-  auto nbits0_32 = MM(add_epi32)(nbits0_32_lo, nbits0_32_hi);
-  auto nbits1_32 = MM(add_epi32)(nbits1_32_lo, nbits1_32_hi);
+  nbits0 = MM(madd_epi16)(nbits0, MM(set1_epi16)(1));
+  nbits1 = MM(madd_epi16)(nbits1, MM(set1_epi16)(1));
   auto bits0_32 = MMSI(or)(bits0_32_lo, bits0_32_hi);
   auto bits1_32 = MMSI(or)(bits1_32_lo, bits1_32_hi);
 
   // 32 -> 64
-  auto nbits0_64_lo = MMSI(and)(nbits0_32, MM(set1_epi64x)(0xFF));
-  auto nbits1_64_lo = MMSI(and)(nbits1_32, MM(set1_epi64x)(0xFF));
-  auto nbits0_64_hi = MM(srli_epi64)(nbits0_32, 32);
-  auto nbits1_64_hi = MM(srli_epi64)(nbits1_32, 32);
 #ifdef __AVX2__
-  auto nbits_inv0_64_lo = MM(subs_epu8)(MM(set1_epi64x)(32), nbits0_32);
-  auto nbits_inv1_64_lo = MM(subs_epu8)(MM(set1_epi64x)(32), nbits1_32);
+  auto nbits_inv0_64_lo = MM(subs_epu8)(MM(set1_epi64x)(32), nbits0);
+  auto nbits_inv1_64_lo = MM(subs_epu8)(MM(set1_epi64x)(32), nbits1);
   bits0 = MM(sllv_epi32)(bits0_32, nbits_inv0_64_lo);
   bits1 = MM(sllv_epi32)(bits1_32, nbits_inv1_64_lo);
   bits0 = MM(srlv_epi64)(bits0, nbits_inv0_64_lo);
   bits1 = MM(srlv_epi64)(bits1, nbits_inv1_64_lo);
 #else
+  auto nbits0_64_lo = MMSI(and)(nbits0, MM(set1_epi64x)(0xFF));
+  auto nbits1_64_lo = MMSI(and)(nbits1, MM(set1_epi64x)(0xFF));
   // just do two shifts for SSE variant
   auto bits0_64_lo = MMSI(and)(bits0_32, MM(set1_epi64x)(0xFFFFFFFF));
   auto bits1_64_lo = MMSI(and)(bits1_32, MM(set1_epi64x)(0xFFFFFFFF));
@@ -793,14 +788,12 @@ static FORCE_INLINE void WriteBits(MIVEC nbits, MIVEC bits_lo, MIVEC bits_hi,
   bits1 = MMSI(or)(bits1_64_lo, bits1_64_hi);
 #endif
 
-  auto nbits0_64 = MM(add_epi64)(nbits0_64_lo, nbits0_64_hi);
-  auto nbits1_64 = MM(add_epi64)(nbits1_64_lo, nbits1_64_hi);
+  auto nbits01 = MM(hadd_epi32)(nbits0, nbits1);
 
   // nbits_a <= 40 as we have at most 10 bits per symbol, so the call to the
   // writer is safe.
-  alignas(SIMD_WIDTH) uint64_t nbits_a[SIMD_WIDTH / 4];
-  MMSI(store)((MIVEC *)nbits_a, nbits0_64);
-  MMSI(store)((MIVEC *)nbits_a + 1, nbits1_64);
+  alignas(SIMD_WIDTH) uint32_t nbits_a[SIMD_WIDTH / 4];
+  MMSI(store)((MIVEC *)nbits_a, nbits01);
   alignas(SIMD_WIDTH) uint64_t bits_a[SIMD_WIDTH / 4];
   MMSI(store)((MIVEC *)bits_a, bits0);
   MMSI(store)((MIVEC *)bits_a + 1, bits1);
@@ -818,7 +811,7 @@ static FORCE_INLINE void WriteBits(MIVEC nbits, MIVEC bits_lo, MIVEC bits_hi,
 #if FPNGE_USE_PEXT
     bits = _pext_u64(bits, bitmask_a[kPerm[ii]]);
 #endif
-    uint64_t count = nbits_a[kPerm[ii]];
+    auto count = nbits_a[ii];
     writer->Write(count, bits);
   }
 }
