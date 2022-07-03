@@ -946,11 +946,15 @@ EncodeOneRow(size_t bytes_per_line, const unsigned char *current_row_buf,
 
   auto adler_accum_s1 = INT2VEC(s1);
   auto adler_accum_s2 = INT2VEC(s2);
+  auto adler_s1_sum = MMSI(setzero)();
 
-  size_t last_adler_flush = 0;
-  uint16_t len = 1;
+  uint16_t bytes_since_flush = 1;
 
   auto flush_adler = [&]() {
+    adler_accum_s2 = MM(add_epi32)(
+        adler_accum_s2, MM(slli_epi32)(adler_s1_sum, SIMD_WIDTH == 32 ? 5 : 4));
+    adler_s1_sum = MMSI(setzero)();
+
     uint32_t ls1 = hadd(adler_accum_s1);
     uint32_t ls2 = hadd(adler_accum_s2);
     ls1 %= kAdler32Mod;
@@ -959,7 +963,7 @@ EncodeOneRow(size_t bytes_per_line, const unsigned char *current_row_buf,
     s2 = ls2;
     adler_accum_s1 = INT2VEC(s1);
     adler_accum_s2 = INT2VEC(s2);
-    last_adler_flush = len;
+    bytes_since_flush = 0;
   };
 
   auto encode_chunk_cb = [&](const MIVEC bytes, const size_t bytes_in_vec) {
@@ -1021,17 +1025,8 @@ EncodeOneRow(size_t bytes_per_line, const unsigned char *current_row_buf,
   };
 
   auto adler_chunk_cb = [&](const MIVEC pdata, size_t bytes_in_vec) {
-    len += bytes_in_vec;
-
-    adler_accum_s2 = MM(add_epi32)(
-        MM(mullo_epi32)(MM(set1_epi32)(bytes_in_vec), adler_accum_s1),
-        adler_accum_s2);
-
-    auto bytes =
-        MMSI(and)(pdata, MMSI(loadu)((MIVEC *)(kMaskVec - bytes_in_vec)));
-
-    adler_accum_s1 =
-        MM(add_epi32)(adler_accum_s1, MM(sad_epu8)(bytes, MMSI(setzero)()));
+    bytes_since_flush += bytes_in_vec;
+    auto bytes = pdata;
 
     auto muls = MM(set_epi8)(
         1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16
@@ -1040,12 +1035,25 @@ EncodeOneRow(size_t bytes_per_line, const unsigned char *current_row_buf,
         17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32
 #endif
     );
-    muls = MM(add_epi8)(muls, MM(set1_epi8)(bytes_in_vec - SIMD_WIDTH));
+
+    if (bytes_in_vec < SIMD_WIDTH) {
+      adler_accum_s2 = MM(add_epi32)(
+          MM(mul_epu32)(MM(set1_epi32)(bytes_in_vec), adler_accum_s1),
+          adler_accum_s2);
+      bytes = MMSI(and)(bytes, MMSI(loadu)((MIVEC *)(kMaskVec - bytes_in_vec)));
+      muls = MM(add_epi8)(muls, MM(set1_epi8)(bytes_in_vec - SIMD_WIDTH));
+    } else {
+      adler_s1_sum = MM(add_epi32)(adler_s1_sum, adler_accum_s1);
+    }
+
+    adler_accum_s1 =
+        MM(add_epi32)(adler_accum_s1, MM(sad_epu8)(bytes, MMSI(setzero)()));
+
     auto bytesmuls = MM(maddubs_epi16)(bytes, muls);
     adler_accum_s2 = MM(add_epi32)(
         adler_accum_s2, MM(madd_epi16)(bytesmuls, MM(set1_epi16)(1)));
 
-    if (len >= 5500 + last_adler_flush) {
+    if (bytes_since_flush >= 5500) {
       flush_adler();
     }
   };
