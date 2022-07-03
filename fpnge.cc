@@ -678,10 +678,9 @@ TryPredictor(size_t bytes_per_line, const unsigned char *current_row_buf,
   }
 }
 
-// Either bits_hi is empty, or bits_lo contains exactly mid_lo_nbits bits.
-static FORCE_INLINE void WriteBits(MIVEC nbits, MIVEC bits_lo, MIVEC bits_hi,
-                                   size_t mid_lo_nbits,
-                                   BitWriter *__restrict writer) {
+static FORCE_INLINE void WriteBitsLong(MIVEC nbits, MIVEC bits_lo,
+                                       MIVEC bits_hi, size_t mid_lo_nbits,
+                                       BitWriter *__restrict writer) {
 
   // Merge bits_lo and bits_hi in 16-bit "bits".
 #if FPNGE_USE_PEXT
@@ -824,6 +823,103 @@ static FORCE_INLINE void WriteBits(MIVEC nbits, MIVEC bits_lo, MIVEC bits_hi,
   }
 }
 
+// as above, but where nbits <= 8, so we can ignore bits_hi
+static FORCE_INLINE void WriteBitsShort(MIVEC nbits, MIVEC bits,
+                                        BitWriter *__restrict writer) {
+
+#if FPNGE_USE_PEXT
+  // convert nbits into a mask
+  auto bitmask = MM(shuffle_epi8)(
+      BCAST128(_mm_set_epi32(0xffffffff, 0xffffffff, 0x7f3f1f0f, 0x07030100)),
+      nbits);
+  auto bit_count = MM(sad_epu8)(nbits, MMSI(setzero)());
+
+  alignas(SIMD_WIDTH) uint64_t nbits_a[SIMD_WIDTH / 8];
+  MMSI(store)((MIVEC *)nbits_a, bit_count);
+  alignas(SIMD_WIDTH) uint64_t bits_a[SIMD_WIDTH / 8];
+  MMSI(store)((MIVEC *)bits_a, bits);
+  alignas(SIMD_WIDTH) uint64_t bitmask_a[SIMD_WIDTH / 8];
+  MMSI(store)((MIVEC *)bitmask_a, bitmask);
+#else
+  // 8 -> 16
+  auto prod = MM(slli_epi16)(
+      MM(shuffle_epi8)(BCAST128(_mm_set_epi32(
+                           //  since we can't handle 8 bits, we'll under-shift
+                           //  it and do an extra shift later on
+                           -1, 0xffffff80, 0x40201008, 0x040201ff)),
+                       nbits),
+      8);
+  auto bits_hi =
+      MM(mulhi_epu16)(MMSI(andnot)(MM(set1_epi16)(0xff), bits), prod);
+  bits_hi = MM(add_epi16)(bits_hi, bits_hi); // fix under-shifting
+  bits = MMSI(or)(MMSI(and)(bits, MM(set1_epi16)(0xff)), bits_hi);
+  nbits = MM(maddubs_epi16)(nbits, MM(set1_epi8)(1));
+
+  // 16 -> 32
+  auto nbits_32_lo = MMSI(and)(nbits, MM(set1_epi32)(0xFFFF));
+  auto bits_32_lo = MMSI(and)(bits, MM(set1_epi32)(0xFFFF));
+  auto bits_32_hi = MM(srli_epi32)(bits, 16);
+#ifdef __AVX2__
+  bits_32_hi = MM(sllv_epi32)(bits_32_hi, nbits_32_lo);
+#else
+  // need to avoid overflow when converting float -> int, because it converts to
+  // a signed int; do this by offsetting the shift by 1
+  nbits_32_lo = MM(add_epi16)(nbits_32_lo, MM(set1_epi32)(0xFFFF));
+  bits_32_hi = _mm_castps_si128(MM(cvtepi32_ps)(bits_32_hi));
+  bits_32_hi = MM(add_epi32)(bits_32_hi, MM(slli_epi32)(nbits_32_lo, 23));
+  bits_32_hi = MM(cvtps_epi32)(_mm_castsi128_ps(bits_32_hi));
+  bits_32_hi = MM(add_epi32)(bits_32_hi, bits_32_hi); // fix under-shifting
+#endif
+  nbits = MM(madd_epi16)(nbits, MM(set1_epi16)(1));
+  bits = MMSI(or)(bits_32_lo, bits_32_hi);
+
+  // 32 -> 64
+#ifdef __AVX2__
+  auto nbits_inv_64_lo = MM(subs_epu8)(MM(set1_epi64x)(32), nbits);
+  bits = MM(sllv_epi32)(bits, nbits_inv_64_lo);
+  bits = MM(srlv_epi64)(bits, nbits_inv_64_lo);
+#else
+  auto nbits_64_lo = MMSI(and)(nbits, MM(set1_epi64x)(0xFFFFFFFF));
+  auto bits_64_lo = MMSI(and)(bits, MM(set1_epi64x)(0xFFFFFFFF));
+  auto bits_64_hi = MM(srli_epi64)(bits, 32);
+  bits_64_hi = _mm_blend_epi16(
+      _mm_sll_epi64(bits_64_hi, nbits_64_lo),
+      _mm_sll_epi64(bits_64_hi, _mm_unpackhi_epi64(nbits_64_lo, nbits_64_lo)),
+      0xf0);
+  bits = MMSI(or)(bits_64_lo, bits_64_hi);
+#endif
+
+  auto nbits2 = _mm_hadd_epi32(
+#ifdef __AVX2__
+      _mm256_castsi256_si128(nbits), _mm256_extracti128_si256(nbits, 1)
+#else
+      nbits, nbits
+#endif
+  );
+
+  alignas(16) uint32_t nbits_a[4];
+  alignas(SIMD_WIDTH) uint64_t bits_a[SIMD_WIDTH / 8];
+
+  _mm_store_si128((__m128i *)nbits_a, nbits2);
+  MMSI(store)((MIVEC *)bits_a, bits);
+
+#endif
+
+  for (size_t ii = 0; ii < SIMD_WIDTH / 8; ii++) {
+    uint64_t bits64 = bits_a[ii];
+#if FPNGE_USE_PEXT
+    bits64 = _pext_u64(bits64, bitmask_a[ii]);
+#endif
+    if (nbits_a[ii] + writer->bits_in_buffer > 63) {
+      // hope this case rarely occurs
+      writer->Write(16, bits64 & 0xffff);
+      bits64 >>= 16;
+      nbits_a[ii] -= 16;
+    }
+    writer->Write(nbits_a[ii], bits64);
+  }
+}
+
 static void
 EncodeOneRow(size_t bytes_per_line, const unsigned char *current_row_buf,
              const unsigned char *top_buf, const unsigned char *left_buf,
@@ -874,40 +970,54 @@ EncodeOneRow(size_t bytes_per_line, const unsigned char *current_row_buf,
     // (`-16 <= bytes <= 15` is equivalent to `bytes + 112 > 95`)
     auto use_lowhi = MM(cmpgt_epi8)(MM(add_epi8)(bytes, MM(set1_epi8)(112)),
                                     MM(set1_epi8)(95));
-    auto data_for_midlut =
-        MMSI(and)(MM(set1_epi8)(0xF), MM(srai_epi16)(bytes, 4));
 
     auto nbits_low16 = MM(shuffle_epi8)(
         BCAST128(_mm_load_si128((__m128i *)table.first16_nbits)), data_for_lut);
     auto nbits_hi16 = MM(shuffle_epi8)(
         BCAST128(_mm_load_si128((__m128i *)table.last16_nbits)), data_for_lut);
+    auto nbits = MM(blendv_epi8)(nbits_low16, nbits_hi16, bytes);
 
     auto bits_low16 = MM(shuffle_epi8)(
         BCAST128(_mm_load_si128((__m128i *)table.first16_bits)), data_for_lut);
     auto bits_hi16 = MM(shuffle_epi8)(
         BCAST128(_mm_load_si128((__m128i *)table.last16_bits)), data_for_lut);
-    auto bits_mid_lo =
-        MM(shuffle_epi8)(BCAST128(_mm_load_si128((__m128i *)table.mid_lowbits)),
-                         data_for_midlut);
-
-    auto bits_hi = MM(shuffle_epi8)(
-        BCAST128(_mm_load_si128((__m128i *)kBitReverseNibbleLookup)),
-        data_for_lut);
-
-    auto nbits = MM(blendv_epi8)(nbits_low16, nbits_hi16, bytes);
-    nbits = MM(blendv_epi8)(MM(set1_epi8)(table.mid_nbits), nbits, use_lowhi);
-    nbits = MMSI(and)(nbits, maskv);
-
     auto bits_lo = MM(blendv_epi8)(bits_low16, bits_hi16, bytes);
-    bits_lo = MM(blendv_epi8)(bits_mid_lo, bits_lo, use_lowhi);
+
+    if (MM(movemask_epi8)(use_lowhi) ^ SIMD_MASK) {
+      auto data_for_midlut =
+          MMSI(and)(MM(set1_epi8)(0xF), MM(srai_epi16)(bytes, 4));
+
+      auto bits_mid_lo = MM(shuffle_epi8)(
+          BCAST128(_mm_load_si128((__m128i *)table.mid_lowbits)),
+          data_for_midlut);
+
+      auto bits_hi = MM(shuffle_epi8)(
+          BCAST128(_mm_load_si128((__m128i *)kBitReverseNibbleLookup)),
+          data_for_lut);
+
+      nbits = MM(blendv_epi8)(MM(set1_epi8)(table.mid_nbits), nbits, use_lowhi);
+      nbits = MMSI(and)(nbits, maskv);
+
+      bits_lo = MM(blendv_epi8)(bits_mid_lo, bits_lo, use_lowhi);
 
 #if !FPNGE_USE_PEXT
-    bits_lo = MMSI(and)(bits_lo, maskv);
-    bits_hi = MMSI(andnot)(use_lowhi, bits_hi);
-    bits_hi = MMSI(and)(bits_hi, maskv);
+      bits_lo = MMSI(and)(bits_lo, maskv);
+      bits_hi = MMSI(andnot)(use_lowhi, bits_hi);
+      bits_hi = MMSI(and)(bits_hi, maskv);
 #endif
 
-    WriteBits(nbits, bits_lo, bits_hi, table.mid_nbits - 4, writer);
+      WriteBitsLong(nbits, bits_lo, bits_hi, table.mid_nbits - 4, writer);
+    } else {
+      // since mid (symbols 16-239) is not present, we can take some shortcuts
+      // this is expected to occur frequently if compression is effective
+      nbits = MMSI(and)(nbits, maskv);
+
+#if !FPNGE_USE_PEXT
+      bits_lo = MMSI(and)(bits_lo, maskv);
+#endif
+
+      WriteBitsShort(nbits, bits_lo, writer);
+    }
   };
 
   auto adler_chunk_cb = [&](const MIVEC pdata, size_t bytes_in_vec) {
