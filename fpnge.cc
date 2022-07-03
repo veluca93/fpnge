@@ -44,10 +44,14 @@ static FORCE_INLINE unsigned BSF32(unsigned v) {
 #define PLATFORM_AMD64 1
 #endif
 
+#if !defined(FPNGE_USE_PEXT)
 #if defined(__BMI2__) && defined(PLATFORM_AMD64) &&                            \
     !defined(__tune_znver1__) && !defined(__tune_znver2__) &&                  \
     !defined(__tune_bdver4__)
-#define FPNGE_USE_PEXT
+#define FPNGE_USE_PEXT 1
+#else
+#define FPNGE_USE_PEXT 0
+#endif
 #endif
 
 #include <wmmintrin.h> // for CLMUL
@@ -670,7 +674,7 @@ static FORCE_INLINE void WriteBits(MIVEC nbits, MIVEC bits_lo, MIVEC bits_hi,
                                    BitWriter *__restrict writer) {
 
   // Merge bits_lo and bits_hi in 16-bit "bits".
-#ifdef FPNGE_USE_PEXT
+#if FPNGE_USE_PEXT
   auto bits0 = MM(unpacklo_epi8)(bits_lo, bits_hi);
   auto bits1 = MM(unpackhi_epi8)(bits_lo, bits_hi);
 
@@ -678,11 +682,8 @@ static FORCE_INLINE void WriteBits(MIVEC nbits, MIVEC bits_lo, MIVEC bits_hi,
   auto nbits_hi = MM(sub_epi8)(nbits, MM(set1_epi8)(mid_lo_nbits));
   auto nbits0 = MM(unpacklo_epi8)(nbits, nbits_hi);
   auto nbits1 = MM(unpackhi_epi8)(nbits, nbits_hi);
-  const auto nbits_to_mask = MM(set_epi32)(
-#if SIMD_WIDTH == 32
-      0xffffffff, 0xffffffff, 0x7f3f1f0f, 0x07030100,
-#endif
-      0xffffffff, 0xffffffff, 0x7f3f1f0f, 0x07030100);
+  const auto nbits_to_mask =
+      BCAST128(_mm_set_epi32(0xffffffff, 0xffffffff, 0x7f3f1f0f, 0x07030100));
   auto bitmask0 = MM(shuffle_epi8)(nbits_to_mask, nbits0);
   auto bitmask1 = MM(shuffle_epi8)(nbits_to_mask, nbits1);
 
@@ -695,8 +696,8 @@ static FORCE_INLINE void WriteBits(MIVEC nbits, MIVEC bits_lo, MIVEC bits_hi,
   bit_count2 = _mm_shuffle_epi32(bit_count2, _MM_SHUFFLE(3, 1, 2, 0));
   _mm_store_si128((__m128i *)nbits_a, bit_count2);
 #else
-  bit_count = MM(hadd_epi16)(bit_count, bit_count);
-  _mm_storel_epi64((MIVEC *)nbits_a, bit_count);
+  bit_count = _mm_hadd_epi16(bit_count, bit_count);
+  _mm_storel_epi64((__m128i *)nbits_a, bit_count);
 #endif
 
   alignas(SIMD_WIDTH) uint64_t bits_a[SIMD_WIDTH / 4];
@@ -814,7 +815,7 @@ static FORCE_INLINE void WriteBits(MIVEC nbits, MIVEC bits_lo, MIVEC bits_hi,
 
   for (size_t ii = 0; ii < SIMD_WIDTH / 4; ii++) {
     uint64_t bits = bits_a[kPerm[ii]];
-#ifdef FPNGE_USE_PEXT
+#if FPNGE_USE_PEXT
     bits = _pext_u64(bits, bitmask_a[kPerm[ii]]);
 #endif
     uint64_t count = nbits_a[kPerm[ii]];
