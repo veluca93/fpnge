@@ -544,7 +544,8 @@ alignas(SIMD_WIDTH) const int32_t _kMaskVec[] = {-1, -1, -1, -1,
                                                  -1, -1, -1, -1, 0, 0, 0, 0,
 #endif
                                                  0,  0,  0,  0};
-const uint8_t *kMaskVec = (const uint8_t *)_kMaskVec + SIMD_WIDTH;
+const uint8_t *kMaskVec =
+    reinterpret_cast<const uint8_t *>(_kMaskVec) + SIMD_WIDTH;
 
 template <size_t predictor, typename CB, typename CB_ADL, typename CB_RLE>
 static FORCE_INLINE void
