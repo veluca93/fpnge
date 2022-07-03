@@ -490,13 +490,8 @@ static uint32_t hadd(MIVEC v) {
 #else
       v;
 #endif
-  auto hi = _mm_unpackhi_epi64(sum, sum);
-
-  sum = _mm_add_epi32(hi, sum);
-  hi = _mm_shuffle_epi32(sum, 0xB1);
-
-  sum = _mm_add_epi32(sum, hi);
-
+  sum = _mm_hadd_epi32(sum, sum);
+  sum = _mm_hadd_epi32(sum, sum);
   return _mm_cvtsi128_si32(sum);
 }
 
