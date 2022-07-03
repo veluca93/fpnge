@@ -557,7 +557,7 @@ alignas(SIMD_WIDTH) const int32_t _kMaskVec[] = {0,  0,  0,  0,
 #if SIMD_WIDTH == 32
                                                  0,  0,  0,  0, -1, -1, -1, -1,
 #endif
-                                                 -1, -1, -1, -1};
+                                                     -1, -1, -1, -1};
 const uint8_t *kMaskVec =
     reinterpret_cast<const uint8_t *>(_kMaskVec) + SIMD_WIDTH;
 
@@ -732,8 +732,8 @@ static FORCE_INLINE void WriteBitsLong(MIVEC nbits, MIVEC bits_lo,
   }
 
   // 16 -> 32
-  auto nbits0_32_lo = MMSI(and)(nbits0, MM(set1_epi32)(0xFF));
-  auto nbits1_32_lo = MMSI(and)(nbits1, MM(set1_epi32)(0xFF));
+  auto nbits0_32_lo = MMSI(and)(nbits0, MM(set1_epi32)(0xFFFF));
+  auto nbits1_32_lo = MMSI(and)(nbits1, MM(set1_epi32)(0xFFFF));
 
   auto bits0_32_lo = MMSI(and)(bits0, MM(set1_epi32)(0xFFFF));
   auto bits1_32_lo = MMSI(and)(bits1, MM(set1_epi32)(0xFFFF));
@@ -772,8 +772,8 @@ static FORCE_INLINE void WriteBitsLong(MIVEC nbits, MIVEC bits_lo,
   bits0 = MM(srlv_epi64)(bits0, nbits_inv0_64_lo);
   bits1 = MM(srlv_epi64)(bits1, nbits_inv1_64_lo);
 #else
-  auto nbits0_64_lo = MMSI(and)(nbits0, MM(set1_epi64x)(0xFF));
-  auto nbits1_64_lo = MMSI(and)(nbits1, MM(set1_epi64x)(0xFF));
+  auto nbits0_64_lo = MMSI(and)(nbits0, MM(set1_epi64x)(0xFFFFFFFF));
+  auto nbits1_64_lo = MMSI(and)(nbits1, MM(set1_epi64x)(0xFFFFFFFF));
   // just do two shifts for SSE variant
   auto bits0_64_lo = MMSI(and)(bits0_32, MM(set1_epi64x)(0xFFFFFFFF));
   auto bits1_64_lo = MMSI(and)(bits1_32, MM(set1_epi64x)(0xFFFFFFFF));
