@@ -29,10 +29,29 @@ static FORCE_INLINE unsigned BSF32(unsigned v) {
   return idx;
 }
 #define __SSE4_1__ 1
+#ifdef __AVX2__
+#define __BMI2__ 1
+#endif
 #else
 #define FORCE_INLINE_LAMBDA __attribute__((always_inline))
 #define FORCE_INLINE __attribute__((always_inline)) inline
 #define BSF32 __builtin_ctzl
+#endif
+
+#if defined(__x86_64__) || defined(__amd64__) || defined(__LP64) ||            \
+    defined(_M_X64) || defined(_M_AMD64) ||                                    \
+    (defined(_WIN64) && !defined(_M_ARM64))
+#define PLATFORM_AMD64 1
+#endif
+
+#if !defined(FPNGE_USE_PEXT)
+#if defined(__BMI2__) && defined(PLATFORM_AMD64) &&                            \
+    !defined(__tune_znver1__) && !defined(__tune_znver2__) &&                  \
+    !defined(__tune_bdver4__)
+#define FPNGE_USE_PEXT 1
+#else
+#define FPNGE_USE_PEXT 0
+#endif
 #endif
 
 #include <wmmintrin.h> // for CLMUL
@@ -471,13 +490,8 @@ static uint32_t hadd(MIVEC v) {
 #else
       v;
 #endif
-  auto hi = _mm_unpackhi_epi64(sum, sum);
-
-  sum = _mm_add_epi32(hi, sum);
-  hi = _mm_shuffle_epi32(sum, 0xB1);
-
-  sum = _mm_add_epi32(sum, hi);
-
+  sum = _mm_hadd_epi32(sum, sum);
+  sum = _mm_hadd_epi32(sum, sum);
   return _mm_cvtsi128_si32(sum);
 }
 
@@ -581,16 +595,23 @@ template <typename CB> static void ForAllRLESymbols(size_t length, CB &&cb) {
   assert(length >= 4);
   length -= 1;
 
-  if (length % 258 == 1 || length % 258 == 2) {
-    length -= 3;
-    cb(3);
-  }
-  while (length >= 258) {
-    length -= 258;
-    cb(258);
-  }
-  if (length) {
-    cb(length);
+  if (length < 258) {
+    // fast path if long sequences are rare in the image
+    cb(length, 1);
+  } else {
+    auto runs = length / 258;
+    auto remain = length % 258;
+    if (remain == 1 || remain == 2) {
+      remain += 258 - 3;
+      runs--;
+      cb(3, 1);
+    }
+    if (runs) {
+      cb(258, runs);
+    }
+    if (remain) {
+      cb(remain, 1);
+    }
   }
 }
 
@@ -631,8 +652,8 @@ TryPredictor(size_t bytes_per_line_buf, const unsigned char *mask,
       cost_chunk_cb, [](size_t, const uint8_t *, const uint8_t *, size_t) {},
       [&](size_t run) {
         cost_rle += table.first16_nbits[0];
-        ForAllRLESymbols(run, [&](size_t len) {
-          cost_rle += dist_nbits + table.lz77_length_nbits[len];
+        ForAllRLESymbols(run, [&](size_t len, size_t count) {
+          cost_rle += (dist_nbits + table.lz77_length_nbits[len]) * count;
         });
       });
   size_t cost = cost_rle + hadd(cost_direct);
@@ -648,6 +669,37 @@ static FORCE_INLINE void WriteBits(MIVEC nbits, MIVEC bits_lo, MIVEC bits_hi,
                                    BitWriter *__restrict writer) {
 
   // Merge bits_lo and bits_hi in 16-bit "bits".
+#if FPNGE_USE_PEXT
+  auto bits0 = MM(unpacklo_epi8)(bits_lo, bits_hi);
+  auto bits1 = MM(unpackhi_epi8)(bits_lo, bits_hi);
+
+  // convert nbits into a mask
+  auto nbits_hi = MM(sub_epi8)(nbits, MM(set1_epi8)(mid_lo_nbits));
+  auto nbits0 = MM(unpacklo_epi8)(nbits, nbits_hi);
+  auto nbits1 = MM(unpackhi_epi8)(nbits, nbits_hi);
+  const auto nbits_to_mask =
+      BCAST128(_mm_set_epi32(0xffffffff, 0xffffffff, 0x7f3f1f0f, 0x07030100));
+  auto bitmask0 = MM(shuffle_epi8)(nbits_to_mask, nbits0);
+  auto bitmask1 = MM(shuffle_epi8)(nbits_to_mask, nbits1);
+
+  // aggregate nbits
+  alignas(16) uint16_t nbits_a[SIMD_WIDTH / 4];
+  auto bit_count = MM(maddubs_epi16)(nbits, MM(set1_epi8)(1));
+#ifdef __AVX2__
+  auto bit_count2 = _mm_hadd_epi16(_mm256_castsi256_si128(bit_count),
+                                   _mm256_extracti128_si256(bit_count, 1));
+  _mm_store_si128((__m128i *)nbits_a, bit_count2);
+#else
+  bit_count = _mm_hadd_epi16(bit_count, bit_count);
+  _mm_storel_epi64((__m128i *)nbits_a, bit_count);
+#endif
+
+  alignas(SIMD_WIDTH) uint64_t bitmask_a[SIMD_WIDTH / 4];
+  MMSI(store)((MIVEC *)bitmask_a, bitmask0);
+  MMSI(store)((MIVEC *)bitmask_a + 1, bitmask1);
+
+#else
+
   auto nbits0 = MM(unpacklo_epi8)(nbits, MMSI(setzero)());
   auto nbits1 = MM(unpackhi_epi8)(nbits, MMSI(setzero)());
   MIVEC bits0, bits1;
@@ -667,8 +719,6 @@ static FORCE_INLINE void WriteBits(MIVEC nbits, MIVEC bits_lo, MIVEC bits_hi,
   // 16 -> 32
   auto nbits0_32_lo = MMSI(and)(nbits0, MM(set1_epi32)(0xFF));
   auto nbits1_32_lo = MMSI(and)(nbits1, MM(set1_epi32)(0xFF));
-  auto nbits0_32_hi = MM(srai_epi32)(nbits0, 16);
-  auto nbits1_32_hi = MM(srai_epi32)(nbits1, 16);
 
   auto bits0_32_lo = MMSI(and)(bits0, MM(set1_epi32)(0xFFFF));
   auto bits1_32_lo = MMSI(and)(bits1, MM(set1_epi32)(0xFFFF));
@@ -693,24 +743,22 @@ static FORCE_INLINE void WriteBits(MIVEC nbits, MIVEC bits_lo, MIVEC bits_hi,
   bits1_32_hi = MM(cvtps_epi32)(_mm_castsi128_ps(bits1_32_hi));
 #endif
 
-  auto nbits0_32 = MM(add_epi32)(nbits0_32_lo, nbits0_32_hi);
-  auto nbits1_32 = MM(add_epi32)(nbits1_32_lo, nbits1_32_hi);
+  nbits0 = MM(madd_epi16)(nbits0, MM(set1_epi16)(1));
+  nbits1 = MM(madd_epi16)(nbits1, MM(set1_epi16)(1));
   auto bits0_32 = MMSI(or)(bits0_32_lo, bits0_32_hi);
   auto bits1_32 = MMSI(or)(bits1_32_lo, bits1_32_hi);
 
   // 32 -> 64
-  auto nbits0_64_lo = MMSI(and)(nbits0_32, MM(set1_epi64x)(0xFF));
-  auto nbits1_64_lo = MMSI(and)(nbits1_32, MM(set1_epi64x)(0xFF));
-  auto nbits0_64_hi = MM(srli_epi64)(nbits0_32, 32);
-  auto nbits1_64_hi = MM(srli_epi64)(nbits1_32, 32);
 #ifdef __AVX2__
-  auto nbits_inv0_64_lo = MM(subs_epu8)(MM(set1_epi64x)(32), nbits0_32);
-  auto nbits_inv1_64_lo = MM(subs_epu8)(MM(set1_epi64x)(32), nbits1_32);
+  auto nbits_inv0_64_lo = MM(subs_epu8)(MM(set1_epi64x)(32), nbits0);
+  auto nbits_inv1_64_lo = MM(subs_epu8)(MM(set1_epi64x)(32), nbits1);
   bits0 = MM(sllv_epi32)(bits0_32, nbits_inv0_64_lo);
   bits1 = MM(sllv_epi32)(bits1_32, nbits_inv1_64_lo);
   bits0 = MM(srlv_epi64)(bits0, nbits_inv0_64_lo);
   bits1 = MM(srlv_epi64)(bits1, nbits_inv1_64_lo);
 #else
+  auto nbits0_64_lo = MMSI(and)(nbits0, MM(set1_epi64x)(0xFF));
+  auto nbits1_64_lo = MMSI(and)(nbits1, MM(set1_epi64x)(0xFF));
   // just do two shifts for SSE variant
   auto bits0_64_lo = MMSI(and)(bits0_32, MM(set1_epi64x)(0xFFFFFFFF));
   auto bits1_64_lo = MMSI(and)(bits1_32, MM(set1_epi64x)(0xFFFFFFFF));
@@ -732,14 +780,15 @@ static FORCE_INLINE void WriteBits(MIVEC nbits, MIVEC bits_lo, MIVEC bits_hi,
   bits1 = MMSI(or)(bits1_64_lo, bits1_64_hi);
 #endif
 
-  auto nbits0_64 = MM(add_epi64)(nbits0_64_lo, nbits0_64_hi);
-  auto nbits1_64 = MM(add_epi64)(nbits1_64_lo, nbits1_64_hi);
+  auto nbits01 = MM(hadd_epi32)(nbits0, nbits1);
 
   // nbits_a <= 40 as we have at most 10 bits per symbol, so the call to the
   // writer is safe.
-  alignas(SIMD_WIDTH) uint64_t nbits_a[SIMD_WIDTH / 4];
-  MMSI(store)((MIVEC *)nbits_a, nbits0_64);
-  MMSI(store)((MIVEC *)nbits_a + 1, nbits1_64);
+  alignas(SIMD_WIDTH) uint32_t nbits_a[SIMD_WIDTH / 4];
+  MMSI(store)((MIVEC *)nbits_a, nbits01);
+
+#endif
+
   alignas(SIMD_WIDTH) uint64_t bits_a[SIMD_WIDTH / 4];
   MMSI(store)((MIVEC *)bits_a, bits0);
   MMSI(store)((MIVEC *)bits_a + 1, bits1);
@@ -752,7 +801,10 @@ static FORCE_INLINE void WriteBits(MIVEC nbits, MIVEC bits_lo, MIVEC bits_hi,
 
   for (size_t ii = 0; ii < SIMD_WIDTH / 4; ii++) {
     uint64_t bits = bits_a[kPerm[ii]];
-    uint64_t count = nbits_a[kPerm[ii]];
+#if FPNGE_USE_PEXT
+    bits = _pext_u64(bits, bitmask_a[kPerm[ii]]);
+#endif
+    auto count = nbits_a[ii];
     writer->Write(count, bits);
   }
 }
@@ -827,7 +879,7 @@ EncodeOneRow(size_t bytes_per_line_buf,
         MM(shuffle_epi8)(BCAST128(_mm_load_si128((__m128i *)table.mid_lowbits)),
                          data_for_midlut);
 
-    auto bits_mid_hi = MM(shuffle_epi8)(
+    auto bits_hi = MM(shuffle_epi8)(
         BCAST128(_mm_load_si128((__m128i *)kBitReverseNibbleLookup)),
         data_for_lut);
 
@@ -838,10 +890,11 @@ EncodeOneRow(size_t bytes_per_line_buf,
     auto bits_lo = MM(blendv_epi8)(bits_low16, bits_hi16, bytes);
     bits_lo = MM(blendv_epi8)(bits_mid_lo, bits_lo, use_lowhi);
 
+#if !FPNGE_USE_PEXT
     bits_lo = MMSI(and)(bits_lo, maskv);
-
-    auto bits_hi = MMSI(and)(
-        bits_mid_hi, MM(cmpeq_epi8)(nbits, MM(set1_epi8)(table.mid_nbits)));
+    bits_hi = MMSI(andnot)(use_lowhi, bits_hi);
+    bits_hi = MMSI(and)(bits_hi, maskv);
+#endif
 
     WriteBits(nbits, bits_lo, bits_hi, table.mid_nbits - 4, writer);
   };
@@ -872,9 +925,13 @@ EncodeOneRow(size_t bytes_per_line_buf,
 
   auto encode_rle_cb = [&](size_t run) {
     writer->Write(table.first16_nbits[0], table.first16_bits[0]);
-    ForAllRLESymbols(run, [&](size_t len) {
-      writer->Write(table.lz77_length_nbits[len], table.lz77_length_bits[len]);
-      writer->Write(dist_nbits, dist_bits);
+    ForAllRLESymbols(run, [&](size_t len, size_t count) {
+      uint32_t bits = (dist_bits << table.lz77_length_nbits[len]) |
+                      table.lz77_length_bits[len];
+      auto nbits = table.lz77_length_nbits[len] + dist_nbits;
+      while (count--) {
+        writer->Write(nbits, bits);
+      }
     });
   };
 
@@ -941,8 +998,9 @@ static void CollectSymbolCounts(
         284, 284, 284, 284, 284, 284, 284, 284, 284, 284, 284, 284, 284, 284,
         284, 284, 284, 284, 284, 284, 285,
     };
-    ForAllRLESymbols(run,
-                     [&](size_t len) { symbol_counts[kLZ77Sym[len]] += 1; });
+    ForAllRLESymbols(run, [&](size_t len, size_t count) {
+      symbol_counts[kLZ77Sym[len]] += count;
+    });
   };
 
 #ifdef FPNGE_FIXED_PREDICTOR
