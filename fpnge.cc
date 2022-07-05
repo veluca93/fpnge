@@ -553,9 +553,10 @@ static FORCE_INLINE MIVEC PredictVec(const unsigned char *current_buf,
   }
 }
 
-alignas(SIMD_WIDTH) const int32_t _kMaskVec[] = {0,  0,  0,  0,
+alignas(SIMD_WIDTH) constexpr int32_t _kMaskVec[] = {0,  0,  0,  0,
 #if SIMD_WIDTH == 32
-                                                 0,  0,  0,  0, -1, -1, -1, -1,
+                                                     0,  0,  0,  0,
+                                                     -1, -1, -1, -1,
 #endif
                                                      -1, -1, -1, -1};
 const uint8_t *kMaskVec =
@@ -585,7 +586,8 @@ ProcessRow(size_t bytes_per_line, const unsigned char *current_row_buf,
     }
     cb_adl(pdata, SIMD_WIDTH);
   }
-  size_t bytes_remaining = bytes_per_line ^ i; // equivalent to `bytes_per_line - i`
+  size_t bytes_remaining =
+      bytes_per_line ^ i; // equivalent to `bytes_per_line - i`
   if (bytes_remaining) {
     auto pdata = PredictVec<predictor>(current_row_buf + i, top_buf + i,
                                        left_buf + i, topleft_buf + i);
