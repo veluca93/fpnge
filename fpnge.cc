@@ -562,17 +562,21 @@ alignas(SIMD_WIDTH) constexpr int32_t _kMaskVec[] = {0,  0,  0,  0,
 const uint8_t *kMaskVec =
     reinterpret_cast<const uint8_t *>(_kMaskVec) + SIMD_WIDTH;
 
-template <size_t predictor, typename CB, typename CB_ADL, typename CB_RLE>
+template <size_t predictor, bool store_pred = false, typename CB,
+          typename CB_ADL, typename CB_RLE>
 static void
 ProcessRow(size_t bytes_per_line, const unsigned char *current_row_buf,
            const unsigned char *top_buf, const unsigned char *left_buf,
            const unsigned char *topleft_buf, CB &&cb, CB_ADL &&cb_adl,
-           CB_RLE &&cb_rle) {
+           CB_RLE &&cb_rle, unsigned char *predicted_data = nullptr) {
   size_t run = 0;
   size_t i = 0;
   for (; i + SIMD_WIDTH <= bytes_per_line; i += SIMD_WIDTH) {
     auto pdata = PredictVec<predictor>(current_row_buf + i, top_buf + i,
                                        left_buf + i, topleft_buf + i);
+    if (store_pred) {
+      MMSI(store)((MIVEC *)(predicted_data + i), pdata);
+    }
     unsigned pdatais0 =
         MM(movemask_epi8)(MM(cmpeq_epi8)(pdata, MMSI(setzero)()));
     if (pdatais0 == SIMD_MASK) {
@@ -591,6 +595,9 @@ ProcessRow(size_t bytes_per_line, const unsigned char *current_row_buf,
   if (bytes_remaining) {
     auto pdata = PredictVec<predictor>(current_row_buf + i, top_buf + i,
                                        left_buf + i, topleft_buf + i);
+    if (store_pred) {
+      MMSI(store)((MIVEC *)(predicted_data + i), pdata);
+    }
     unsigned pdatais0 =
         MM(movemask_epi8)(MM(cmpeq_epi8)(pdata, MMSI(setzero)()));
     auto mask = (1UL << bytes_remaining) - 1;
@@ -635,12 +642,13 @@ template <typename CB> static void ForAllRLESymbols(size_t length, CB &&cb) {
   }
 }
 
-template <size_t pred>
+template <size_t pred, bool store_pred>
 static void
 TryPredictor(size_t bytes_per_line, const unsigned char *current_row_buf,
              const unsigned char *top_buf, const unsigned char *left_buf,
-             const unsigned char *topleft_buf, const HuffmanTable &table,
-             size_t &best_cost, uint8_t &predictor, size_t dist_nbits) {
+             const unsigned char *topleft_buf, unsigned char *predicted_data,
+             const HuffmanTable &table, size_t &best_cost, uint8_t &predictor,
+             size_t dist_nbits) {
   size_t cost_rle = 0;
   MIVEC cost_direct = MMSI(setzero)();
   auto cost_chunk_cb = [&](const MIVEC bytes,
@@ -665,7 +673,7 @@ TryPredictor(size_t bytes_per_line, const unsigned char *current_row_buf,
     cost_direct =
         MM(add_epi32)(cost_direct, MM(sad_epu8)(nbits, nbits_discard));
   };
-  ProcessRow<pred>(
+  ProcessRow<pred, store_pred>(
       bytes_per_line, current_row_buf, top_buf, left_buf, topleft_buf,
       cost_chunk_cb, [](const MIVEC, size_t) {},
       [&](size_t run) {
@@ -673,7 +681,8 @@ TryPredictor(size_t bytes_per_line, const unsigned char *current_row_buf,
         ForAllRLESymbols(run, [&](size_t len, size_t count) {
           cost_rle += (dist_nbits + table.lz77_length_nbits[len]) * count;
         });
-      });
+      },
+      predicted_data);
   size_t cost = cost_rle + hadd(cost_direct);
   if (cost < best_cost) {
     best_cost = cost;
@@ -926,20 +935,25 @@ static FORCE_INLINE void WriteBitsShort(MIVEC nbits, MIVEC bits,
 static void
 EncodeOneRow(size_t bytes_per_line, const unsigned char *current_row_buf,
              const unsigned char *top_buf, const unsigned char *left_buf,
-             const unsigned char *topleft_buf, const HuffmanTable &table,
-             uint32_t &s1, uint32_t &s2, size_t dist_nbits, size_t dist_bits,
+             const unsigned char *topleft_buf, unsigned char *predicted_data,
+             const HuffmanTable &table, uint32_t &s1, uint32_t &s2,
+             size_t dist_nbits, size_t dist_bits,
              BitWriter *__restrict writer) {
 #ifndef FPNGE_FIXED_PREDICTOR
   uint8_t predictor;
   size_t best_cost = ~0U;
-  TryPredictor<1>(bytes_per_line, current_row_buf, top_buf, left_buf,
-                  topleft_buf, table, best_cost, predictor, dist_nbits);
-  TryPredictor<2>(bytes_per_line, current_row_buf, top_buf, left_buf,
-                  topleft_buf, table, best_cost, predictor, dist_nbits);
-  TryPredictor<3>(bytes_per_line, current_row_buf, top_buf, left_buf,
-                  topleft_buf, table, best_cost, predictor, dist_nbits);
-  TryPredictor<4>(bytes_per_line, current_row_buf, top_buf, left_buf,
-                  topleft_buf, table, best_cost, predictor, dist_nbits);
+  TryPredictor<1, false>(bytes_per_line, current_row_buf, top_buf, left_buf,
+                         topleft_buf, nullptr, table, best_cost, predictor,
+                         dist_nbits);
+  TryPredictor<2, false>(bytes_per_line, current_row_buf, top_buf, left_buf,
+                         topleft_buf, nullptr, table, best_cost, predictor,
+                         dist_nbits);
+  TryPredictor<3, false>(bytes_per_line, current_row_buf, top_buf, left_buf,
+                         topleft_buf, nullptr, table, best_cost, predictor,
+                         dist_nbits);
+  TryPredictor<4, true>(bytes_per_line, current_row_buf, top_buf, left_buf,
+                        topleft_buf, predicted_data, table, best_cost,
+                        predictor, dist_nbits);
 #else
   uint8_t predictor = FPNGE_FIXED_PREDICTOR;
 #endif
@@ -1083,8 +1097,14 @@ EncodeOneRow(size_t bytes_per_line, const unsigned char *current_row_buf,
                   topleft_buf, encode_chunk_cb, adler_chunk_cb, encode_rle_cb);
   } else {
     assert(predictor == 4);
+#ifdef FPNGE_FIXED_PREDICTOR
     ProcessRow<4>(bytes_per_line, current_row_buf, top_buf, left_buf,
                   topleft_buf, encode_chunk_cb, adler_chunk_cb, encode_rle_cb);
+#else
+    // re-use predicted data from TryPredictor
+    ProcessRow<0>(bytes_per_line, predicted_data, nullptr, nullptr, nullptr,
+                  encode_chunk_cb, adler_chunk_cb, encode_rle_cb);
+#endif
   }
 
   flush_adler();
@@ -1201,6 +1221,17 @@ extern "C" size_t FPNGEEncode(size_t bytes_per_channel, size_t num_channels,
                          ? (SIMD_WIDTH - (intptr_t)aligned_buf_ptr % SIMD_WIDTH)
                          : 0;
 
+#ifndef FPNGE_FIXED_PREDICTOR
+  std::vector<unsigned char> pdata_buf(bytes_per_line_buf);
+  unsigned char *aligned_pdata_ptr = pdata_buf.data();
+  aligned_pdata_ptr +=
+      (intptr_t)aligned_pdata_ptr % SIMD_WIDTH
+          ? (SIMD_WIDTH - (intptr_t)aligned_pdata_ptr % SIMD_WIDTH)
+          : 0;
+#else
+  unsigned char *aligned_pdata_ptr = nullptr;
+#endif
+
   BitWriter writer;
   writer.data = static_cast<unsigned char *>(output);
 
@@ -1270,8 +1301,8 @@ extern "C" size_t FPNGEEncode(size_t bytes_per_channel, size_t num_channels,
     memcpy(current_row_buf, current_row_in, bytes_per_line);
 
     EncodeOneRow(bytes_per_line, current_row_buf, top_buf, left_buf,
-                 topleft_buf, huffman_table, s1, s2, dist_nbits, dist_bits,
-                 &writer);
+                 topleft_buf, aligned_pdata_ptr, huffman_table, s1, s2,
+                 dist_nbits, dist_bits, &writer);
 
     size_t bytes = (writer.bytes_written - crc_pos) / 64 * 64;
     crc = update_crc(crc, writer.data + crc_pos, bytes);
