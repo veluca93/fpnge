@@ -24,6 +24,7 @@
 #define FORCE_INLINE_LAMBDA [[msvc::forceinline]]
 #define FORCE_INLINE __forceinline
 #define __SSE4_1__ 1
+#define __PCLMUL__ 1
 #ifdef __AVX2__
 #define __BMI2__ 1
 #endif
@@ -47,8 +48,6 @@
 #define FPNGE_USE_PEXT 0
 #endif
 #endif
-
-#include <wmmintrin.h> // for CLMUL
 
 #ifdef __AVX2__
 #include <immintrin.h>
@@ -335,140 +334,196 @@ static void WriteHuffmanCode(uint32_t &dist_nbits, uint32_t &dist_bits,
   writer->Write(4, 0b1000);
 }
 
-constexpr unsigned kCrcTable[] = {
-    0x0,        0x77073096, 0xee0e612c, 0x990951ba, 0x76dc419,  0x706af48f,
-    0xe963a535, 0x9e6495a3, 0xedb8832,  0x79dcb8a4, 0xe0d5e91e, 0x97d2d988,
-    0x9b64c2b,  0x7eb17cbd, 0xe7b82d07, 0x90bf1d91, 0x1db71064, 0x6ab020f2,
-    0xf3b97148, 0x84be41de, 0x1adad47d, 0x6ddde4eb, 0xf4d4b551, 0x83d385c7,
-    0x136c9856, 0x646ba8c0, 0xfd62f97a, 0x8a65c9ec, 0x14015c4f, 0x63066cd9,
-    0xfa0f3d63, 0x8d080df5, 0x3b6e20c8, 0x4c69105e, 0xd56041e4, 0xa2677172,
-    0x3c03e4d1, 0x4b04d447, 0xd20d85fd, 0xa50ab56b, 0x35b5a8fa, 0x42b2986c,
-    0xdbbbc9d6, 0xacbcf940, 0x32d86ce3, 0x45df5c75, 0xdcd60dcf, 0xabd13d59,
-    0x26d930ac, 0x51de003a, 0xc8d75180, 0xbfd06116, 0x21b4f4b5, 0x56b3c423,
-    0xcfba9599, 0xb8bda50f, 0x2802b89e, 0x5f058808, 0xc60cd9b2, 0xb10be924,
-    0x2f6f7c87, 0x58684c11, 0xc1611dab, 0xb6662d3d, 0x76dc4190, 0x1db7106,
-    0x98d220bc, 0xefd5102a, 0x71b18589, 0x6b6b51f,  0x9fbfe4a5, 0xe8b8d433,
-    0x7807c9a2, 0xf00f934,  0x9609a88e, 0xe10e9818, 0x7f6a0dbb, 0x86d3d2d,
-    0x91646c97, 0xe6635c01, 0x6b6b51f4, 0x1c6c6162, 0x856530d8, 0xf262004e,
-    0x6c0695ed, 0x1b01a57b, 0x8208f4c1, 0xf50fc457, 0x65b0d9c6, 0x12b7e950,
-    0x8bbeb8ea, 0xfcb9887c, 0x62dd1ddf, 0x15da2d49, 0x8cd37cf3, 0xfbd44c65,
-    0x4db26158, 0x3ab551ce, 0xa3bc0074, 0xd4bb30e2, 0x4adfa541, 0x3dd895d7,
-    0xa4d1c46d, 0xd3d6f4fb, 0x4369e96a, 0x346ed9fc, 0xad678846, 0xda60b8d0,
-    0x44042d73, 0x33031de5, 0xaa0a4c5f, 0xdd0d7cc9, 0x5005713c, 0x270241aa,
-    0xbe0b1010, 0xc90c2086, 0x5768b525, 0x206f85b3, 0xb966d409, 0xce61e49f,
-    0x5edef90e, 0x29d9c998, 0xb0d09822, 0xc7d7a8b4, 0x59b33d17, 0x2eb40d81,
-    0xb7bd5c3b, 0xc0ba6cad, 0xedb88320, 0x9abfb3b6, 0x3b6e20c,  0x74b1d29a,
-    0xead54739, 0x9dd277af, 0x4db2615,  0x73dc1683, 0xe3630b12, 0x94643b84,
-    0xd6d6a3e,  0x7a6a5aa8, 0xe40ecf0b, 0x9309ff9d, 0xa00ae27,  0x7d079eb1,
-    0xf00f9344, 0x8708a3d2, 0x1e01f268, 0x6906c2fe, 0xf762575d, 0x806567cb,
-    0x196c3671, 0x6e6b06e7, 0xfed41b76, 0x89d32be0, 0x10da7a5a, 0x67dd4acc,
-    0xf9b9df6f, 0x8ebeeff9, 0x17b7be43, 0x60b08ed5, 0xd6d6a3e8, 0xa1d1937e,
-    0x38d8c2c4, 0x4fdff252, 0xd1bb67f1, 0xa6bc5767, 0x3fb506dd, 0x48b2364b,
-    0xd80d2bda, 0xaf0a1b4c, 0x36034af6, 0x41047a60, 0xdf60efc3, 0xa867df55,
-    0x316e8eef, 0x4669be79, 0xcb61b38c, 0xbc66831a, 0x256fd2a0, 0x5268e236,
-    0xcc0c7795, 0xbb0b4703, 0x220216b9, 0x5505262f, 0xc5ba3bbe, 0xb2bd0b28,
-    0x2bb45a92, 0x5cb36a04, 0xc2d7ffa7, 0xb5d0cf31, 0x2cd99e8b, 0x5bdeae1d,
-    0x9b64c2b0, 0xec63f226, 0x756aa39c, 0x26d930a,  0x9c0906a9, 0xeb0e363f,
-    0x72076785, 0x5005713,  0x95bf4a82, 0xe2b87a14, 0x7bb12bae, 0xcb61b38,
-    0x92d28e9b, 0xe5d5be0d, 0x7cdcefb7, 0xbdbdf21,  0x86d3d2d4, 0xf1d4e242,
-    0x68ddb3f8, 0x1fda836e, 0x81be16cd, 0xf6b9265b, 0x6fb077e1, 0x18b74777,
-    0x88085ae6, 0xff0f6a70, 0x66063bca, 0x11010b5c, 0x8f659eff, 0xf862ae69,
-    0x616bffd3, 0x166ccf45, 0xa00ae278, 0xd70dd2ee, 0x4e048354, 0x3903b3c2,
-    0xa7672661, 0xd06016f7, 0x4969474d, 0x3e6e77db, 0xaed16a4a, 0xd9d65adc,
-    0x40df0b66, 0x37d83bf0, 0xa9bcae53, 0xdebb9ec5, 0x47b2cf7f, 0x30b5ffe9,
-    0xbdbdf21c, 0xcabac28a, 0x53b39330, 0x24b4a3a6, 0xbad03605, 0xcdd70693,
-    0x54de5729, 0x23d967bf, 0xb3667a2e, 0xc4614ab8, 0x5d681b02, 0x2a6f2b94,
-    0xb40bbe37, 0xc30c8ea1, 0x5a05df1b, 0x2d02ef8d};
+#ifdef __PCLMUL__
+#include <wmmintrin.h>
+alignas(32) static const uint8_t pshufb_shf_table[] = {
+    0x80, 0x81, 0x82, 0x83, 0x84, 0x85, 0x86, 0x87, 0x88, 0x89, 0x8a,
+    0x8b, 0x8c, 0x8d, 0x8e, 0x8f, 0x00, 0x01, 0x02, 0x03, 0x04, 0x05,
+    0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f};
 
-static unsigned long update_crc(unsigned long crc, const unsigned char *buf,
-                                int len) {
-  static const uint64_t k1k2[] = {0x1'5444'2BD4ULL, 0x1'C6E4'1596ULL};
-  static const uint64_t k3k4[] = {0x1'7519'97D0ULL, 0x0'CCAA'009EULL};
-  static const uint64_t k5k6[] = {0x1'63CD'6124ULL, 0x0'0000'0000ULL};
-  static const uint64_t poly[] = {0x1'DB71'0641ULL, 0x1'F701'1641ULL};
+class Crc32 {
+  __m128i x0, x1, x2, x3;
 
-  int n = 0;
-  unsigned long c;
+  static inline __m128i double_xor(__m128i a, __m128i b, __m128i c) {
+#ifdef __AVX512VL__
+    return _mm_ternarylogic_epi32(a, b, c, 0x96);
+#else
+    return _mm_xor_si128(_mm_xor_si128(a, b), c);
+#endif
+  }
+  static inline __m128i do_one_fold(__m128i src, __m128i data) {
+    const auto k1k2 = _mm_set_epi32(1, 0x54442bd4, 1, 0xc6e41596);
+    return double_xor(_mm_clmulepi64_si128(src, k1k2, 0x01),
+                      _mm_clmulepi64_si128(src, k1k2, 0x10), data);
+  }
 
-  if (len >= 128) {
-    // Adapted from WUFFs code.
-    auto x0 = _mm_loadu_si128((__m128i *)(buf + n + 0x00));
-    auto x1 = _mm_loadu_si128((__m128i *)(buf + n + 0x10));
-    auto x2 = _mm_loadu_si128((__m128i *)(buf + n + 0x20));
-    auto x3 = _mm_loadu_si128((__m128i *)(buf + n + 0x30));
-
-    x0 = _mm_xor_si128(x0, _mm_cvtsi32_si128(crc));
-    n += 64;
-
-    auto k = _mm_loadu_si128((__m128i *)k1k2);
-    while (n + 64 <= len) {
-      auto y0 = _mm_clmulepi64_si128(x0, k, 0x00);
-      auto y1 = _mm_clmulepi64_si128(x1, k, 0x00);
-      auto y2 = _mm_clmulepi64_si128(x2, k, 0x00);
-      auto y3 = _mm_clmulepi64_si128(x3, k, 0x00);
-
-      x0 = _mm_clmulepi64_si128(x0, k, 0x11);
-      x1 = _mm_clmulepi64_si128(x1, k, 0x11);
-      x2 = _mm_clmulepi64_si128(x2, k, 0x11);
-      x3 = _mm_clmulepi64_si128(x3, k, 0x11);
-
-      x0 = _mm_xor_si128(_mm_xor_si128(x0, y0),
-                         _mm_loadu_si128((__m128i *)(buf + n + 0x00)));
-      x1 = _mm_xor_si128(_mm_xor_si128(x1, y1),
-                         _mm_loadu_si128((__m128i *)(buf + n + 0x10)));
-      x2 = _mm_xor_si128(_mm_xor_si128(x2, y2),
-                         _mm_loadu_si128((__m128i *)(buf + n + 0x20)));
-      x3 = _mm_xor_si128(_mm_xor_si128(x3, y3),
-                         _mm_loadu_si128((__m128i *)(buf + n + 0x30)));
-      n += 64;
+public:
+  Crc32() {
+    x0 = _mm_cvtsi32_si128(0x9db42487);
+    x1 = _mm_setzero_si128();
+    x2 = _mm_setzero_si128();
+    x3 = _mm_setzero_si128();
+  }
+  size_t update(const unsigned char *__restrict data, size_t len) {
+    auto amount = len & ~63;
+    for (size_t i = 0; i < amount; i += 64) {
+      x0 = do_one_fold(x0, _mm_loadu_si128((__m128i *)(data + i)));
+      x1 = do_one_fold(x1, _mm_loadu_si128((__m128i *)(data + i + 0x10)));
+      x2 = do_one_fold(x2, _mm_loadu_si128((__m128i *)(data + i + 0x20)));
+      x3 = do_one_fold(x3, _mm_loadu_si128((__m128i *)(data + i + 0x30)));
+    }
+    return amount;
+  }
+  uint32_t update_final(const unsigned char *__restrict data, size_t len) {
+    if (len >= 64) {
+      update(data, len);
+      data += len & ~63;
+      len &= 63;
     }
 
-    k = _mm_loadu_si128((__m128i *)k3k4);
-    auto y0 = _mm_clmulepi64_si128(x0, k, 0x00);
-    x0 = _mm_clmulepi64_si128(x0, k, 0x11);
-    x0 = _mm_xor_si128(x0, x1);
-    x0 = _mm_xor_si128(x0, y0);
-    y0 = _mm_clmulepi64_si128(x0, k, 0x00);
-    x0 = _mm_clmulepi64_si128(x0, k, 0x11);
-    x0 = _mm_xor_si128(x0, x2);
-    x0 = _mm_xor_si128(x0, y0);
-    y0 = _mm_clmulepi64_si128(x0, k, 0x00);
-    x0 = _mm_clmulepi64_si128(x0, k, 0x11);
-    x0 = _mm_xor_si128(x0, x3);
-    x0 = _mm_xor_si128(x0, y0);
+    if (len >= 48) {
+      auto t3 = x3;
+      x3 = do_one_fold(x2, _mm_loadu_si128((__m128i *)data + 2));
+      x2 = do_one_fold(x1, _mm_loadu_si128((__m128i *)data + 1));
+      x1 = do_one_fold(x0, _mm_loadu_si128((__m128i *)data));
+      x0 = t3;
+    } else if (len >= 32) {
+      auto t2 = x2;
+      auto t3 = x3;
+      x3 = do_one_fold(x1, _mm_loadu_si128((__m128i *)data + 1));
+      x2 = do_one_fold(x0, _mm_loadu_si128((__m128i *)data));
+      x1 = t3;
+      x0 = t2;
+    } else if (len >= 16) {
+      auto t3 = x3;
+      x3 = do_one_fold(x0, _mm_loadu_si128((__m128i *)data));
+      x0 = x1;
+      x1 = x2;
+      x2 = t3;
+    }
+    data += len & 48;
+    len &= 15;
 
-    x1 = _mm_clmulepi64_si128(x0, k, 0x10);
-    x2 = _mm_setr_epi32(~0U, 0, ~0U, 0);
-    x0 = _mm_srli_si128(x0, 8);
-    x0 = _mm_xor_si128(x0, x1);
+    if (len > 0) {
+      auto xmm_shl = _mm_loadu_si128((__m128i *)(pshufb_shf_table + len));
+      auto xmm_shr = _mm_xor_si128(xmm_shl, _mm_set1_epi8(-128));
 
-    k = _mm_loadu_si128((__m128i *)k5k6);
-    x1 = _mm_srli_si128(x0, 4);
-    x0 = _mm_and_si128(x0, x2);
-    x0 = _mm_clmulepi64_si128(x0, k, 0x00);
-    x0 = _mm_xor_si128(x0, x1);
+      auto t0 = _mm_loadu_si128((__m128i *)data);
+      auto t1 = _mm_shuffle_epi8(x0, xmm_shl);
 
-    k = _mm_loadu_si128((__m128i *)poly);
-    x1 = _mm_and_si128(x0, x2);
-    x1 = _mm_clmulepi64_si128(x1, k, 0x10);
-    x1 = _mm_and_si128(x1, x2);
-    x1 = _mm_clmulepi64_si128(x1, k, 0x00);
-    x0 = _mm_xor_si128(x0, x1);
+      x0 = _mm_or_si128(_mm_shuffle_epi8(x0, xmm_shr),
+                        _mm_shuffle_epi8(x1, xmm_shl));
+      x1 = _mm_or_si128(_mm_shuffle_epi8(x1, xmm_shr),
+                        _mm_shuffle_epi8(x2, xmm_shl));
+      x2 = _mm_or_si128(_mm_shuffle_epi8(x2, xmm_shr),
+                        _mm_shuffle_epi8(x3, xmm_shl));
+      x3 = _mm_or_si128(_mm_shuffle_epi8(x3, xmm_shr),
+                        _mm_shuffle_epi8(t0, xmm_shl));
 
-    c = _mm_extract_epi32(x0, 1);
-  } else {
-    c = crc;
+      x3 = do_one_fold(t1, x3);
+    }
+
+    const auto k3k4 = _mm_set_epi32(1, 0x751997d0, 0, 0xccaa009e);
+    const auto k5k4 = _mm_set_epi32(1, 0x63cd6124, 0, 0xccaa009e);
+    const auto poly = _mm_set_epi32(1, 0xdb710640, 0, 0xf7011641);
+
+    x0 = double_xor(x1, _mm_clmulepi64_si128(x0, k3k4, 0x10),
+                    _mm_clmulepi64_si128(x0, k3k4, 0x01));
+    x0 = double_xor(x2, _mm_clmulepi64_si128(x0, k3k4, 0x10),
+                    _mm_clmulepi64_si128(x0, k3k4, 0x01));
+    x0 = double_xor(x3, _mm_clmulepi64_si128(x0, k3k4, 0x10),
+                    _mm_clmulepi64_si128(x0, k3k4, 0x01));
+
+    x1 =
+        _mm_xor_si128(_mm_clmulepi64_si128(x0, k5k4, 0), _mm_srli_si128(x0, 8));
+
+    x0 = _mm_slli_si128(x1, 4);
+    x0 = _mm_clmulepi64_si128(x0, k5k4, 0x10);
+#ifdef __AVX512VL__
+    x0 = _mm_ternarylogic_epi32(x0, x1, _mm_set_epi32(0, -1, -1, 0), 0x28);
+#else
+    x1 = _mm_and_si128(x1, _mm_set_epi32(0, -1, -1, 0));
+    x0 = _mm_xor_si128(x0, x1);
+#endif
+
+    x1 = _mm_clmulepi64_si128(x0, poly, 0);
+    x1 = _mm_clmulepi64_si128(x1, poly, 0x10);
+#ifdef __AVX512VL__
+    x1 = _mm_ternarylogic_epi32(x1, x0, x0, 0xC3); // NOT(XOR(x1, x0))
+#else
+    x0 = _mm_xor_si128(x0, _mm_set_epi32(0, -1, -1, 0));
+    x1 = _mm_xor_si128(x1, x0);
+#endif
+    return _mm_extract_epi32(x1, 2);
   }
+};
+#else
 
-  for (; n < len; n++) {
-    c = kCrcTable[(c ^ buf[n]) & 0xff] ^ (c >> 8);
-  }
-  return c;
+#include <array>
+#include <cstddef>
+#include <utility>
+// from https://joelfilho.com/blog/2020/compile_time_lookup_tables_in_cpp/
+template <std::size_t Length, typename Generator, std::size_t... Indexes>
+constexpr auto lut_impl(Generator &&f, std::index_sequence<Indexes...>) {
+  using content_type = decltype(f(std::size_t{0}));
+  return std::array<content_type, Length>{{f(Indexes)...}};
+}
+template <std::size_t Length, typename Generator>
+constexpr auto lut(Generator &&f) {
+  return lut_impl<Length>(std::forward<Generator>(f),
+                          std::make_index_sequence<Length>{});
 }
 
-static unsigned long compute_crc(const unsigned char *buf, int len) {
-  return update_crc(0xffffffffL, buf, len) ^ 0xffffffffL;
+constexpr uint32_t crc32_slice8_gen(unsigned n) {
+  uint32_t crc = n & 0xff;
+  for (int i = n >> 8; i >= 0; i--) {
+    for (int j = 0; j < 8; j++) {
+      crc = (crc >> 1) ^
+            ((crc & 1) * 0xEDB88320); // 0xEDB88320 = CRC32 polynomial
+    }
+  }
+  return crc;
 }
+static constexpr auto kCrcSlice8LUT = lut<256 * 8>(crc32_slice8_gen);
+
+class Crc32 {
+  uint32_t state;
+
+  // this is based off Fast CRC32 slice-by-8:
+  // https://create.stephan-brumme.com/crc32/
+  static inline uint32_t crc_process_iter(uint32_t crc,
+                                          const uint32_t *current) {
+    uint32_t one = *current++ ^ crc;
+    uint32_t two = *current;
+    return kCrcSlice8LUT[(two >> 24) & 0xFF] ^
+           kCrcSlice8LUT[0x100 + ((two >> 16) & 0xFF)] ^
+           kCrcSlice8LUT[0x200 + ((two >> 8) & 0xFF)] ^
+           kCrcSlice8LUT[0x300 + (two & 0xFF)] ^
+           kCrcSlice8LUT[0x400 + ((one >> 24) & 0xFF)] ^
+           kCrcSlice8LUT[0x500 + ((one >> 16) & 0xFF)] ^
+           kCrcSlice8LUT[0x600 + ((one >> 8) & 0xFF)] ^
+           kCrcSlice8LUT[0x700 + (one & 0xFF)];
+  }
+
+public:
+  Crc32() : state(0xffffffff) {}
+  size_t update(const unsigned char *__restrict data, size_t len) {
+    auto amount = len & ~7;
+    for (size_t i = 0; i < amount; i += 8) {
+      state = crc_process_iter(state, (uint32_t *)(data + i));
+    }
+    return amount;
+  }
+  uint32_t update_final(const unsigned char *__restrict data, size_t len) {
+    auto i = update(data, len);
+    for (; i < len; i++) {
+      state = (state >> 8) ^ kCrcSlice8LUT[(state & 0xFF) ^ data[i]];
+    }
+    return ~state;
+  }
+};
+
+#endif
 
 constexpr unsigned kAdler32Mod = 65521;
 
@@ -1197,7 +1252,8 @@ static void WriteHeader(size_t width, size_t height, size_t bytes_per_channel,
   writer->Write(24, 0);
   assert(writer->bits_in_buffer == 0);
   size_t crc_end = writer->bytes_written;
-  uint32_t crc = compute_crc(writer->data + crc_start, crc_end - crc_start);
+  uint32_t crc =
+      Crc32().update_final(writer->data + crc_start, crc_end - crc_start);
   AppendBE32(crc, writer);
 }
 
@@ -1285,7 +1341,7 @@ extern "C" size_t FPNGEEncode(size_t bytes_per_channel, size_t num_channels,
   uint32_t dist_bits;
   WriteHuffmanCode(dist_nbits, dist_bits, huffman_table, &writer);
 
-  uint32_t crc = ~0U;
+  Crc32 crc;
   uint32_t s1 = 1;
   uint32_t s2 = 0;
   for (size_t y = 0; y < height; y++) {
@@ -1306,9 +1362,8 @@ extern "C" size_t FPNGEEncode(size_t bytes_per_channel, size_t num_channels,
                  topleft_buf, aligned_pdata_ptr, huffman_table, s1, s2,
                  dist_nbits, dist_bits, &writer);
 
-    size_t bytes = (writer.bytes_written - crc_pos) / 64 * 64;
-    crc = update_crc(crc, writer.data + crc_pos, bytes);
-    crc_pos += bytes;
+    crc_pos +=
+        crc.update(writer.data + crc_pos, writer.bytes_written - crc_pos);
   }
 
   // EOB
@@ -1327,10 +1382,9 @@ extern "C" size_t FPNGEEncode(size_t bytes_per_channel, size_t num_channels,
   writer.data[chunk_length_pos + 2] = (data_len >> 8) & 0xFF;
   writer.data[chunk_length_pos + 3] = data_len & 0xFF;
 
-  crc = update_crc(crc, writer.data + crc_pos, writer.bytes_written - crc_pos);
-  crc_pos = writer.bytes_written;
-  crc ^= ~0U;
-  AppendBE32(crc, &writer);
+  auto final_crc =
+      crc.update_final(writer.data + crc_pos, writer.bytes_written - crc_pos);
+  AppendBE32(final_crc, &writer);
 
   // IEND
   writer.Write(32, 0);
