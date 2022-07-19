@@ -49,6 +49,7 @@ int main(int argc, char **argv) {
   lodepng_state_init(&state);
 
   bool has_alpha = false;
+  bool is_hbd = false;
 
   unsigned width, height;
   unsigned error =
@@ -63,6 +64,10 @@ int main(int argc, char **argv) {
     has_alpha = true;
   }
 
+  if (state.info_png.color.bitdepth > 8) {
+    is_hbd = true;
+  }
+
   if (lodepng_chunk_find_const(in_data.data() + 8,
                                in_data.data() + in_data.size(), "tRNS")) {
     has_alpha = true;
@@ -73,13 +78,10 @@ int main(int argc, char **argv) {
   unsigned char *png;
 
   // RGB(A) only for now.
-  if (has_alpha) {
-    error =
-        lodepng_decode32(&png, &width, &height, in_data.data(), in_data.size());
-  } else {
-    error =
-        lodepng_decode24(&png, &width, &height, in_data.data(), in_data.size());
-  }
+  error = lodepng_decode_memory(
+      &png, &width, &height, in_data.data(), in_data.size(),
+      has_alpha ? LodePNGColorType::LCT_RGBA : LodePNGColorType::LCT_RGB,
+      is_hbd ? 16 : 8);
 
   if (error) {
     fprintf(stderr, "lodepng error %u: %s\n", error, lodepng_error_text(error));
@@ -87,13 +89,16 @@ int main(int argc, char **argv) {
   }
 
   size_t encoded_size = 0;
-  void *encoded = malloc(FPNGEOutputAllocSize(1, num_c, width, height));
+  size_t bytes_per_channel = is_hbd ? 2 : 1;
+  void *encoded =
+      malloc(FPNGEOutputAllocSize(bytes_per_channel, num_c, width, height));
 
   if (num_reps > 0) {
     auto start = std::chrono::high_resolution_clock::now();
     for (size_t _ = 0; _ < num_reps; _++) {
       encoded_size =
-          FPNGEEncode(1, num_c, png, width, width * num_c, height, encoded);
+          FPNGEEncode(bytes_per_channel, num_c, png, width,
+                      width * num_c * bytes_per_channel, height, encoded);
     }
     auto stop = std::chrono::high_resolution_clock::now();
     float us =
@@ -106,7 +111,8 @@ int main(int argc, char **argv) {
             encoded_size * 8.0 / float(width) / float(height));
   } else {
     encoded_size =
-        FPNGEEncode(1, num_c, png, width, width * num_c, height, encoded);
+        FPNGEEncode(bytes_per_channel, num_c, png, width,
+                    width * num_c * bytes_per_channel, height, encoded);
   }
 
   FILE *o = fopen(out, "wb");
