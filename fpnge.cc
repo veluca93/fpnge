@@ -1280,7 +1280,7 @@ extern "C" size_t FPNGEEncode(size_t bytes_per_channel, size_t num_channels,
                          : 0;
 
 #ifndef FPNGE_FIXED_PREDICTOR
-  std::vector<unsigned char> pdata_buf(bytes_per_line_buf);
+  std::vector<unsigned char> pdata_buf(bytes_per_line_buf + SIMD_WIDTH - 1);
   unsigned char *aligned_pdata_ptr = pdata_buf.data();
   aligned_pdata_ptr +=
       (intptr_t)aligned_pdata_ptr % SIMD_WIDTH
