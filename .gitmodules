@@ -1,0 +1,3 @@
+[submodule "jxl_testdata"]
+	path = jxl_testdata
+	url = https://github.com/libjxl/testdata.git
