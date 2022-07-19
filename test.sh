@@ -66,7 +66,7 @@ done
 
 echo $CASES cases, $FAILURES failures
 
-if [ $FAILURES > 0 ]
+if [ $FAILURES -gt 0 ]
 then
   exit 1
 fi
