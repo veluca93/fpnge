@@ -995,22 +995,63 @@ EncodeOneRow(size_t bytes_per_line, const unsigned char *current_row_buf,
              const unsigned char *topleft_buf, unsigned char *predicted_data,
              const HuffmanTable &table, uint32_t &s1, uint32_t &s2,
              size_t dist_nbits, size_t dist_bits,
-             BitWriter *__restrict writer) {
+             BitWriter *__restrict writer,
+             size_t line_number,
+             size_t* filter_counts,
+             size_t* paeth_run) {
 #ifndef FPNGE_FIXED_PREDICTOR
+  size_t paeth_ff_block_size    =  8;// for each block of {} scanlines, use only paeth for the remaining lines if ...
+  size_t paeth_ff_threshold     =  3;// ... all of {} early lines used paeth
+  size_t filter_skip_block_size = 32;// for each block of {} scanlines, turn off individual filters based on stats
+  size_t filter_skip_stat_end   = 16;// do full search up to this point to gather stats
+  size_t filter_skip_min_count  =  1;// a filter must have been selected this many times to be used in the rest of the block
+
+  if (line_number % paeth_ff_block_size == 0) {
+    *paeth_run = 0;
+  }
+  if (line_number % filter_skip_block_size == 0) {// reset stats at beginning of block
+    filter_counts[0] = 0;
+    filter_counts[1] = 0;
+    filter_counts[2] = 0;
+    filter_counts[3] = 0;
+    filter_counts[4] = 0;
+  }
+
   uint8_t predictor;
   size_t best_cost = ~0U;
-  TryPredictor<1, /*store_pred=*/false>(
-      bytes_per_line, current_row_buf, top_buf, left_buf, topleft_buf, nullptr,
-      table, best_cost, predictor, dist_nbits);
-  TryPredictor<2, /*store_pred=*/false>(
-      bytes_per_line, current_row_buf, top_buf, left_buf, topleft_buf, nullptr,
-      table, best_cost, predictor, dist_nbits);
-  TryPredictor<3, /*store_pred=*/false>(
-      bytes_per_line, current_row_buf, top_buf, left_buf, topleft_buf, nullptr,
-      table, best_cost, predictor, dist_nbits);
-  TryPredictor<4, /*store_pred=*/true>(bytes_per_line, current_row_buf, top_buf,
+  if (line_number < paeth_ff_threshold || *paeth_run < paeth_ff_threshold) {// skip full filter search if the paeth_ff_block starts with only paeth filters
+    // individual filters are skipped if we are done with the stat-gathering part of each filter_skip_block, and the filter was not used enough
+    if (line_number % filter_skip_block_size < filter_skip_stat_end || filter_counts[1] >= filter_skip_min_count) {
+      TryPredictor<1, /*store_pred=*/false>(
+          bytes_per_line, current_row_buf, top_buf, left_buf, topleft_buf, nullptr,
+          table, best_cost, predictor, dist_nbits);
+    }
+    if (line_number % filter_skip_block_size < filter_skip_stat_end || filter_counts[2] >= filter_skip_min_count) {
+      TryPredictor<2, /*store_pred=*/false>(
+          bytes_per_line, current_row_buf, top_buf, left_buf, topleft_buf, nullptr,
+          table, best_cost, predictor, dist_nbits);
+    }
+    if (line_number % filter_skip_block_size < filter_skip_stat_end || filter_counts[3] >= filter_skip_min_count) {
+      TryPredictor<3, /*store_pred=*/false>(
+          bytes_per_line, current_row_buf, top_buf, left_buf, topleft_buf, nullptr,
+          table, best_cost, predictor, dist_nbits);
+    }
+    if (line_number % filter_skip_block_size < filter_skip_stat_end || filter_counts[4] >= filter_skip_min_count) {
+      TryPredictor<4, /*store_pred=*/true>(bytes_per_line, current_row_buf, top_buf,
                                        left_buf, topleft_buf, predicted_data,
                                        table, best_cost, predictor, dist_nbits);
+    }
+    filter_counts[predictor]++;
+    if (predictor == 4) {
+      *paeth_run += 1;
+    }
+  }
+  else {
+    // current code assumes paeth calculations are stored, so we have to actually generate them even when no filter seach is performed
+    TryPredictor<4, /*store_pred=*/true>(bytes_per_line, current_row_buf, top_buf,
+                                       left_buf, topleft_buf, predicted_data,
+                                       table, best_cost, predictor, dist_nbits);
+  }
 #else
   uint8_t predictor = FPNGE_FIXED_PREDICTOR;
 #endif
@@ -1341,6 +1382,10 @@ extern "C" size_t FPNGEEncode(size_t bytes_per_channel, size_t num_channels,
   uint32_t dist_bits;
   WriteHuffmanCode(dist_nbits, dist_bits, huffman_table, &writer);
 
+  // Filter heuristic stats
+  size_t filter_counts [5];
+  size_t paeth_run = 0;
+
   Crc32 crc;
   uint32_t s1 = 1;
   uint32_t s2 = 0;
@@ -1360,7 +1405,7 @@ extern "C" size_t FPNGEEncode(size_t bytes_per_channel, size_t num_channels,
 
     EncodeOneRow(bytes_per_line, current_row_buf, top_buf, left_buf,
                  topleft_buf, aligned_pdata_ptr, huffman_table, s1, s2,
-                 dist_nbits, dist_bits, &writer);
+                 dist_nbits, dist_bits, &writer, y, (size_t *)filter_counts, &paeth_run);
 
     crc_pos +=
         crc.update(writer.data + crc_pos, writer.bytes_written - crc_pos);
