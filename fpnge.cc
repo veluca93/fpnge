@@ -1019,6 +1019,7 @@ EncodeOneRow(size_t bytes_per_line, const unsigned char *current_row_buf,
 
   uint8_t predictor;
   size_t best_cost = ~0U;
+  bool skip_paeth = true;
   if (line_number < paeth_ff_threshold || *paeth_run < paeth_ff_threshold) {// skip full filter search if the paeth_ff_block starts with only paeth filters
     // individual filters are skipped if we are done with the stat-gathering part of each filter_skip_block, and the filter was not used enough
     if (line_number % filter_skip_block_size < filter_skip_stat_end || filter_counts[1] >= filter_skip_min_count) {
@@ -1047,13 +1048,12 @@ EncodeOneRow(size_t bytes_per_line, const unsigned char *current_row_buf,
     }
   }
   else {
-    // current code assumes paeth calculations are stored, so we have to actually generate them even when no filter seach is performed
-    TryPredictor<4, /*store_pred=*/true>(bytes_per_line, current_row_buf, top_buf,
-                                       left_buf, topleft_buf, predicted_data,
-                                       table, best_cost, predictor, dist_nbits);
+    skip_paeth = false;
+    predictor = 4;
   }
 #else
   uint8_t predictor = FPNGE_FIXED_PREDICTOR;
+  bool skip_paeth = false;
 #endif
 
   writer->Write(table.first16_nbits[predictor], table.first16_bits[predictor]);
@@ -1195,14 +1195,13 @@ EncodeOneRow(size_t bytes_per_line, const unsigned char *current_row_buf,
                   topleft_buf, encode_chunk_cb, adler_chunk_cb, encode_rle_cb);
   } else {
     assert(predictor == 4);
-#ifdef FPNGE_FIXED_PREDICTOR
-    ProcessRow<4>(bytes_per_line, current_row_buf, top_buf, left_buf,
-                  topleft_buf, encode_chunk_cb, adler_chunk_cb, encode_rle_cb);
-#else
-    // re-use predicted data from TryPredictor
-    ProcessRow<0>(bytes_per_line, predicted_data, nullptr, nullptr, nullptr,
-                  encode_chunk_cb, adler_chunk_cb, encode_rle_cb);
-#endif
+    if (skip_paeth)
+      // re-use predicted data from TryPredictor
+      ProcessRow<0>(bytes_per_line, predicted_data, nullptr, nullptr, nullptr,
+                    encode_chunk_cb, adler_chunk_cb, encode_rle_cb);
+    else
+      ProcessRow<4>(bytes_per_line, current_row_buf, top_buf, left_buf,
+                    topleft_buf, encode_chunk_cb, adler_chunk_cb, encode_rle_cb);
   }
 
   flush_adler();
