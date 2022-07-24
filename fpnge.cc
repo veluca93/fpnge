@@ -1000,8 +1000,8 @@ EncodeOneRow(size_t bytes_per_line, const unsigned char *current_row_buf,
              size_t* filter_counts,
              size_t* paeth_run) {
 #ifndef FPNGE_FIXED_PREDICTOR
-  size_t paeth_ff_block_size    =  8;// for each block of {} scanlines, use only paeth for the remaining lines if ...
-  size_t paeth_ff_threshold     =  3;// ... all of {} early lines used paeth
+  size_t paeth_ff_block_size    = 16;// for each block of {} scanlines, use only paeth for the remaining lines if ...
+  size_t paeth_ff_threshold     =  4;// ... all of {} early lines used paeth
   size_t filter_skip_block_size = 32;// for each block of {} scanlines, turn off individual filters based on stats
   size_t filter_skip_stat_end   = 16;// do full search up to this point to gather stats
   size_t filter_skip_min_count  =  1;// a filter must have been selected this many times to be used in the rest of the block
