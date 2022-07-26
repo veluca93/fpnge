@@ -303,6 +303,8 @@ struct BitWriter {
     }
   }
 
+  size_t BitsWritten() const { return bytes_written * 8 + bits_in_buffer; }
+
   unsigned char *data;
   size_t bytes_written = 0;
   size_t bits_in_buffer = 0;
@@ -994,26 +996,58 @@ EncodeOneRow(size_t bytes_per_line, const unsigned char *current_row_buf,
              const unsigned char *top_buf, const unsigned char *left_buf,
              const unsigned char *topleft_buf, unsigned char *predicted_data,
              const HuffmanTable &table, uint32_t &s1, uint32_t &s2,
-             size_t dist_nbits, size_t dist_bits,
-             BitWriter *__restrict writer) {
-#ifndef FPNGE_FIXED_PREDICTOR
+             size_t dist_nbits, size_t dist_bits, BitWriter *__restrict writer,
+             uint32_t *num_wins, size_t &num_rows, size_t &bits_at_start) {
   uint8_t predictor;
-  size_t best_cost = ~0U;
-  TryPredictor<1, /*store_pred=*/false>(
-      bytes_per_line, current_row_buf, top_buf, left_buf, topleft_buf, nullptr,
-      table, best_cost, predictor, dist_nbits);
-  TryPredictor<2, /*store_pred=*/false>(
-      bytes_per_line, current_row_buf, top_buf, left_buf, topleft_buf, nullptr,
-      table, best_cost, predictor, dist_nbits);
-  TryPredictor<3, /*store_pred=*/false>(
-      bytes_per_line, current_row_buf, top_buf, left_buf, topleft_buf, nullptr,
-      table, best_cost, predictor, dist_nbits);
-  TryPredictor<4, /*store_pred=*/true>(bytes_per_line, current_row_buf, top_buf,
-                                       left_buf, topleft_buf, predicted_data,
-                                       table, best_cost, predictor, dist_nbits);
-#else
-  uint8_t predictor = FPNGE_FIXED_PREDICTOR;
+  bool tried_paeth = false;
+  bool short_circuited = false;
+#ifndef FPNGE_FIXED_PREDICTOR
+  uint8_t historical_best = 0;
+  uint8_t second_historical_best = 0;
+  for (size_t i = 0; i < 5; i++) {
+    if (num_wins[historical_best] <= num_wins[i]) {
+      second_historical_best = historical_best;
+      historical_best = i;
+    }
+  }
+  auto is_predictor_interesting = [&num_wins, &historical_best](int p) {
+    return num_wins[historical_best] <= num_wins[p] + 8;
+  };
+  if (!is_predictor_interesting(second_historical_best)) {
+    short_circuited = true;
+    predictor = historical_best;
+  } else {
+    size_t best_cost = ~0U;
+    if (is_predictor_interesting(1)) {
+      TryPredictor<1, /*store_pred=*/false>(
+          bytes_per_line, current_row_buf, top_buf, left_buf, topleft_buf,
+          nullptr, table, best_cost, predictor, dist_nbits);
+    }
+    if (is_predictor_interesting(2)) {
+      TryPredictor<2, /*store_pred=*/false>(
+          bytes_per_line, current_row_buf, top_buf, left_buf, topleft_buf,
+          nullptr, table, best_cost, predictor, dist_nbits);
+    }
+    if (is_predictor_interesting(3)) {
+      TryPredictor<3, /*store_pred=*/false>(
+          bytes_per_line, current_row_buf, top_buf, left_buf, topleft_buf,
+          nullptr, table, best_cost, predictor, dist_nbits);
+    }
+    if (is_predictor_interesting(4)) {
+      TryPredictor<4, /*store_pred=*/true>(
+          bytes_per_line, current_row_buf, top_buf, left_buf, topleft_buf,
+          predicted_data, table, best_cost, predictor, dist_nbits);
+      tried_paeth = true;
+    }
+#ifndef FPNGE_EXHAUSTIVE_PREDICTOR_SEARCH
+    num_wins[predictor]++;
 #endif
+  }
+#else
+  predictor = FPNGE_FIXED_PREDICTOR;
+#endif
+
+  size_t bits_before_row = writer->BitsWritten();
 
   writer->Write(table.first16_nbits[predictor], table.first16_bits[predictor]);
   UpdateAdler32(s1, s2, predictor);
@@ -1154,17 +1188,34 @@ EncodeOneRow(size_t bytes_per_line, const unsigned char *current_row_buf,
                   topleft_buf, encode_chunk_cb, adler_chunk_cb, encode_rle_cb);
   } else {
     assert(predictor == 4);
-#ifdef FPNGE_FIXED_PREDICTOR
-    ProcessRow<4>(bytes_per_line, current_row_buf, top_buf, left_buf,
-                  topleft_buf, encode_chunk_cb, adler_chunk_cb, encode_rle_cb);
-#else
-    // re-use predicted data from TryPredictor
-    ProcessRow<0>(bytes_per_line, predicted_data, nullptr, nullptr, nullptr,
-                  encode_chunk_cb, adler_chunk_cb, encode_rle_cb);
-#endif
+    if (!tried_paeth) {
+      ProcessRow<4>(bytes_per_line, current_row_buf, top_buf, left_buf,
+                    topleft_buf, encode_chunk_cb, adler_chunk_cb,
+                    encode_rle_cb);
+    } else {
+      // re-use predicted data from TryPredictor
+      ProcessRow<0>(bytes_per_line, predicted_data, nullptr, nullptr, nullptr,
+                    encode_chunk_cb, adler_chunk_cb, encode_rle_cb);
+    }
   }
 
   flush_adler();
+
+#ifndef FPNGE_FIXED_PREDICTOR
+  size_t bits = writer->BitsWritten();
+
+  if ((bits - bits_before_row) * num_rows >
+          (bits_before_row - bits_at_start) * 2 &&
+      short_circuited) {
+    num_rows = 0;
+    bits_at_start = bits;
+    for (size_t i = 0; i < 5; i++) {
+      num_wins[i] = 0;
+    }
+  } else {
+    num_rows++;
+  }
+#endif
 }
 
 static void CollectSymbolCounts(size_t bytes_per_line,
@@ -1341,6 +1392,10 @@ extern "C" size_t FPNGEEncode(size_t bytes_per_channel, size_t num_channels,
   uint32_t dist_bits;
   WriteHuffmanCode(dist_nbits, dist_bits, huffman_table, &writer);
 
+  uint32_t num_wins[5] = {};
+  size_t num_rows = 0;
+  size_t bits_at_start = writer.BitsWritten();
+
   Crc32 crc;
   uint32_t s1 = 1;
   uint32_t s2 = 0;
@@ -1360,7 +1415,8 @@ extern "C" size_t FPNGEEncode(size_t bytes_per_channel, size_t num_channels,
 
     EncodeOneRow(bytes_per_line, current_row_buf, top_buf, left_buf,
                  topleft_buf, aligned_pdata_ptr, huffman_table, s1, s2,
-                 dist_nbits, dist_bits, &writer);
+                 dist_nbits, dist_bits, &writer, num_wins, num_rows,
+                 bits_at_start);
 
     crc_pos +=
         crc.update(writer.data + crc_pos, writer.bytes_written - crc_pos);
