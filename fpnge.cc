@@ -96,6 +96,10 @@ struct HuffmanTable {
   uint8_t nbits[286];
   uint16_t end_bits;
 
+#ifdef FPNGE_APPROX_PREDICTOR
+  alignas(16) uint8_t approx_nbits[16];
+#endif
+
   alignas(16) uint8_t first16_nbits[16];
   alignas(16) uint8_t first16_bits[16];
 
@@ -271,6 +275,15 @@ struct HuffmanTable {
     }
 
     dist_nbits = 1;
+
+#ifdef FPNGE_APPROX_PREDICTOR
+    approx_nbits[0] =
+        nbits[0] - 1; // subtract 1 as a fudge for catering for RLE
+    for (size_t i = 1; i < 15; i++) {
+      approx_nbits[i] = (nbits[i] + nbits[256 - i] + 1) / 2;
+    }
+    approx_nbits[15] = mid_nbits;
+#endif
   }
 
   void FillBits() {
@@ -1065,12 +1078,101 @@ static FORCE_INLINE void WriteBitsShort(MIVEC nbits, MIVEC bits,
   }
 }
 
+#ifdef FPNGE_APPROX_PREDICTOR
+static FORCE_INLINE void AddApproxCost(MIVEC &total, MIVEC pdata,
+                                       MIVEC bit_costs) {
+  auto approx_sym = MM(min_epu8)(MM(abs_epi8)(pdata), MM(set1_epi8)(15));
+  auto cost = MM(shuffle_epi8)(bit_costs, approx_sym);
+  total = MM(add_epi64)(total, MM(sad_epu8)(cost, MMSI(setzero)()));
+}
+static FORCE_INLINE void AddApproxCost(MIVEC &total, MIVEC pdata,
+                                       MIVEC bit_costs, MIVEC maskv) {
+  auto approx_sym = MM(min_epu8)(MM(abs_epi8)(pdata), MM(set1_epi8)(15));
+  auto cost = MM(shuffle_epi8)(bit_costs, approx_sym);
+  auto cost_mask = MMSI(and)(maskv, cost);
+  total = MM(add_epi64)(total, MM(sad_epu8)(cost, cost_mask));
+}
+#endif
+
 static uint8_t
 SelectPredictor(size_t bytes_per_line, const unsigned char *current_row_buf,
                 const unsigned char *top_buf, const unsigned char *left_buf,
                 const unsigned char *topleft_buf, unsigned char *paeth_data,
                 const HuffmanTable &table) {
-#ifndef FPNGE_FIXED_PREDICTOR
+#ifdef FPNGE_FIXED_PREDICTOR
+  (void)bytes_per_line;
+  (void)current_row_buf;
+  (void)top_buf;
+  (void)left_buf;
+  (void)topleft_buf;
+  (void)paeth_data;
+  (void)table;
+  return FPNGE_FIXED_PREDICTOR;
+#elif defined(FPNGE_APPROX_PREDICTOR)
+  auto bit_costs = BCAST128(_mm_load_si128((__m128i *)(table.approx_nbits)));
+  size_t i = 0;
+  auto cost1 = MMSI(setzero)();
+  auto cost2 = MMSI(setzero)();
+  auto cost3 = MMSI(setzero)();
+  auto cost4 = MMSI(setzero)();
+  MIVEC pdata;
+
+  for (; i + SIMD_WIDTH <= bytes_per_line; i += SIMD_WIDTH) {
+    pdata = PredictVec<1>(current_row_buf + i, top_buf + i, left_buf + i,
+                          topleft_buf + i);
+    AddApproxCost(cost1, pdata, bit_costs);
+
+    pdata = PredictVec<2>(current_row_buf + i, top_buf + i, left_buf + i,
+                          topleft_buf + i);
+    AddApproxCost(cost2, pdata, bit_costs);
+
+    pdata = PredictVec<3>(current_row_buf + i, top_buf + i, left_buf + i,
+                          topleft_buf + i);
+    AddApproxCost(cost3, pdata, bit_costs);
+
+    pdata = PredictVec<4>(current_row_buf + i, top_buf + i, left_buf + i,
+                          topleft_buf + i);
+    AddApproxCost(cost4, pdata, bit_costs);
+    MMSI(store)((MIVEC *)(paeth_data + i), pdata);
+  }
+
+  size_t bytes_remaining =
+      bytes_per_line ^ i; // equivalent to `bytes_per_line - i`
+  if (bytes_remaining) {
+    auto maskv = MMSI(loadu)((MIVEC *)(kMaskVec - bytes_remaining));
+
+    pdata = PredictVec<1>(current_row_buf + i, top_buf + i, left_buf + i,
+                          topleft_buf + i);
+    AddApproxCost(cost1, pdata, bit_costs, maskv);
+
+    pdata = PredictVec<2>(current_row_buf + i, top_buf + i, left_buf + i,
+                          topleft_buf + i);
+    AddApproxCost(cost2, pdata, bit_costs, maskv);
+
+    pdata = PredictVec<3>(current_row_buf + i, top_buf + i, left_buf + i,
+                          topleft_buf + i);
+    AddApproxCost(cost3, pdata, bit_costs, maskv);
+
+    pdata = PredictVec<4>(current_row_buf + i, top_buf + i, left_buf + i,
+                          topleft_buf + i);
+    AddApproxCost(cost4, pdata, bit_costs, maskv);
+    MMSI(store)((MIVEC *)(paeth_data + i), pdata);
+  }
+
+  uint8_t predictor = 1;
+  size_t best_cost = hadd(cost1);
+  auto test_cost = [&](MIVEC costv, uint8_t pred) {
+    size_t cost = hadd(costv);
+    if (cost < best_cost) {
+      best_cost = cost;
+      predictor = pred;
+    }
+  };
+  test_cost(cost2, 2);
+  test_cost(cost3, 3);
+  test_cost(cost4, 4);
+  return predictor;
+#else
   uint8_t predictor;
   size_t best_cost = ~0U;
   TryPredictor<1, /*store_pred=*/false>(bytes_per_line, current_row_buf,
@@ -1086,15 +1188,6 @@ SelectPredictor(size_t bytes_per_line, const unsigned char *current_row_buf,
                                        left_buf, topleft_buf, paeth_data, table,
                                        best_cost, predictor);
   return predictor;
-#else
-  (void)bytes_per_line;
-  (void)current_row_buf;
-  (void)top_buf;
-  (void)left_buf;
-  (void)topleft_buf;
-  (void)paeth_data;
-  (void)table;
-  return FPNGE_FIXED_PREDICTOR;
 #endif
 }
 
