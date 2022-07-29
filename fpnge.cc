@@ -322,9 +322,9 @@ struct HuffmanTable {
   // estimate for CollectSymbolCounts
   // only fills nbits; skips computing actual codes
   HuffmanTable() {
-    // the following is equivalent to ComputeNBits(0, 0, 0 ...), but much faster
+    // the following is similar to ComputeNBits(0, 0, 0 ...), but much faster
     constexpr uint8_t collapsed_nbits[] = {
-        2,  3,  4,  5,  5,  6,  6,  6,  7,  7,  8,  7,  8,  8,  8,  8,
+        2,  3,  4,  5,  5,  6,  6,  6,  7,  7,  7,  7,  8,  8,  8,  8,
         8,  8,  8,  8,  8,  7,  7,  7,  7,  6,  6,  6,  5,  5,  4,  3,
 
         13, 13, 13, 13, 13, 13, 13, 13, 13, 13, 13, 13, 13, 13, 13, 13,
@@ -1378,7 +1378,9 @@ CollectSymbolCounts(size_t bytes_per_line, const unsigned char *current_row_buf,
   ProcessRow<FPNGE_FIXED_PREDICTOR>(bytes_per_line, current_row_buf, top_buf,
                                     left_buf, topleft_buf, encode_chunk_cb,
                                     adler_chunk_cb, encode_rle_cb);
-#elif defined(FPNGE_SYM_TRIAL_PREDICT)
+#elif defined(FPNGE_APPROX_PREDICTOR)
+  // filter selection here seems to be slightly more effective when using the
+  // approximate selector; more investigation is probably warranted
   HuffmanTable dummy_table;
   uint8_t predictor =
       SelectPredictor(bytes_per_line, current_row_buf, top_buf, left_buf,
