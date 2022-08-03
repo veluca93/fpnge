@@ -1465,6 +1465,7 @@ extern "C" size_t FPNGEEncode(size_t bytes_per_channel, size_t num_channels,
 
   // options sanity check
   assert(options->predictor >= 0 && options->predictor <= 6);
+  assert(options->huffman_sample >= 0 && options->huffman_sample <= 127);
 
   BitWriter writer;
   writer.data = static_cast<unsigned char *>(output);
@@ -1482,9 +1483,9 @@ extern "C" size_t FPNGEEncode(size_t bytes_per_channel, size_t num_channels,
 
   uint64_t symbol_counts[286] = {};
 
-  // Sample ~1.5% of the rows in the center of the image.
-  size_t y0 = height * 126 / 256;
-  size_t y1 = height * 130 / 256;
+  // Sample rows in the center of the image.
+  size_t y0 = height * (127 - options->huffman_sample) / 256;
+  size_t y1 = height * (129 + options->huffman_sample) / 256;
   if (y1 == 0) { // for 1 pixel high images
     y1 = 1;
   }

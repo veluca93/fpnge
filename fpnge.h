@@ -22,13 +22,15 @@ extern "C" {
 struct FPNGEOptions {
   char predictor; // 0-4: fixed predictor, 5: fast predictor selection, 6: slow
                   // predictor selection
+  char huffman_sample; // 0-127: how much of the image to sample
 };
 
 #define FPNGE_COMPRESS_LEVEL_DEFAULT 4
-#define FPNGE_COMPRESS_LEVEL_BEST 4
+#define FPNGE_COMPRESS_LEVEL_BEST 5
 inline void FPNGEFillOptions(struct FPNGEOptions *options, int level) {
   if (level == 0)
     level = FPNGE_COMPRESS_LEVEL_DEFAULT;
+  options->huffman_sample = 1;
   switch (level) {
   case 1:
     options->predictor = 2;
@@ -39,6 +41,9 @@ inline void FPNGEFillOptions(struct FPNGEOptions *options, int level) {
   case 3:
     options->predictor = 5;
     break;
+  case 5:
+    options->huffman_sample = 23;
+    // fall through
   default:
     options->predictor = 6;
     break;
