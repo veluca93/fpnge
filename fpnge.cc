@@ -1486,7 +1486,7 @@ extern "C" size_t FPNGEEncode(size_t bytes_per_channel, size_t num_channels,
   // Sample rows in the center of the image.
   size_t y0 = height * (127 - options->huffman_sample) / 256;
   size_t y1 = height * (129 + options->huffman_sample) / 256;
-  if (y1 == 0) { // for 1 pixel high images
+  if (y1 == 0 && height > 0) { // for 1 pixel high images
     y1 = 1;
   }
 
