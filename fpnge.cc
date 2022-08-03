@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include "fpnge.h"
 #include <algorithm>
 #include <assert.h>
 #include <stdint.h>
@@ -55,7 +56,20 @@
 #define MMSI(f) _mm256_##f##_si256
 #define MIVEC __m256i
 #define BCAST128 _mm256_broadcastsi128_si256
+// workaround for compilers not supporting _mm256_zextsi128_si256
+#if (defined(__clang__) && __clang_major__ >= 5 &&                             \
+     (!defined(__APPLE__) || __clang_major__ >= 7)) ||                         \
+    (defined(__GNUC__) && __GNUC__ >= 10) ||                                   \
+    (defined(_MSC_VER) && _MSC_VER >= 1910)
+#define INT2VEC(v) _mm256_zextsi128_si256(_mm_cvtsi32_si128(v))
+#elif defined(__OPTIMIZE__)
+// technically incorrect, but should work fine most of the time
 #define INT2VEC(v) _mm256_castsi128_si256(_mm_cvtsi32_si128(v))
+#else
+// _mm256_insert_epi32 is unavailable on MSVC 19.0, so prefer the following
+#define INT2VEC(v)                                                             \
+  _mm256_inserti128_si256(_mm256_setzero_si256(), _mm_cvtsi32_si128(v), 0);
+#endif
 #define SIMD_WIDTH 32
 #define SIMD_MASK 0xffffffffU
 #elif defined(__SSE4_1__)
@@ -96,9 +110,7 @@ struct HuffmanTable {
   uint8_t nbits[286];
   uint16_t end_bits;
 
-#ifdef FPNGE_APPROX_PREDICTOR
   alignas(16) uint8_t approx_nbits[16];
-#endif
 
   alignas(16) uint8_t first16_nbits[16];
   alignas(16) uint8_t first16_bits[16];
@@ -276,14 +288,12 @@ struct HuffmanTable {
 
     dist_nbits = 1;
 
-#ifdef FPNGE_APPROX_PREDICTOR
     approx_nbits[0] =
         nbits[0] - 1; // subtract 1 as a fudge for catering for RLE
     for (size_t i = 1; i < 15; i++) {
       approx_nbits[i] = (nbits[i] + nbits[256 - i] + 1) / 2;
     }
     approx_nbits[15] = mid_nbits;
-#endif
   }
 
   void FillBits() {
@@ -725,16 +735,8 @@ static void
 ProcessRow(uint8_t predictor, size_t bytes_per_line,
            const unsigned char *current_row_buf, const unsigned char *top_buf,
            const unsigned char *left_buf, const unsigned char *topleft_buf,
-           const unsigned char *paeth_data, CB &&cb, CB_ADL &&cb_adl,
-           CB_RLE &&cb_rle) {
-#ifdef FPNGE_FIXED_PREDICTOR
-  (void)paeth_data;
-  if (predictor == 0) {
-    ProcessRow<0>(bytes_per_line, current_row_buf, top_buf, left_buf,
-                  topleft_buf, cb, cb_adl, cb_rle);
-  } else
-#endif
-      if (predictor == 1) {
+           CB &&cb, CB_ADL &&cb_adl, CB_RLE &&cb_rle) {
+  if (predictor == 1) {
     ProcessRow<1>(bytes_per_line, current_row_buf, top_buf, left_buf,
                   topleft_buf, cb, cb_adl, cb_rle);
   } else if (predictor == 2) {
@@ -743,16 +745,13 @@ ProcessRow(uint8_t predictor, size_t bytes_per_line,
   } else if (predictor == 3) {
     ProcessRow<3>(bytes_per_line, current_row_buf, top_buf, left_buf,
                   topleft_buf, cb, cb_adl, cb_rle);
-  } else {
-    assert(predictor == 4);
-#ifdef FPNGE_FIXED_PREDICTOR
+  } else if (predictor == 4) {
     ProcessRow<4>(bytes_per_line, current_row_buf, top_buf, left_buf,
                   topleft_buf, cb, cb_adl, cb_rle);
-#else
-    // re-use predicted data from TryPredictor
-    ProcessRow<0>(bytes_per_line, paeth_data, nullptr, nullptr, nullptr, cb,
-                  cb_adl, cb_rle);
-#endif
+  } else {
+    assert(predictor == 0);
+    ProcessRow<0>(bytes_per_line, current_row_buf, top_buf, left_buf,
+                  topleft_buf, cb, cb_adl, cb_rle);
   }
 }
 
@@ -1078,7 +1077,6 @@ static FORCE_INLINE void WriteBitsShort(MIVEC nbits, MIVEC bits,
   }
 }
 
-#ifdef FPNGE_APPROX_PREDICTOR
 static FORCE_INLINE void AddApproxCost(MIVEC &total, MIVEC pdata,
                                        MIVEC bit_costs) {
   auto approx_sym = MM(min_epu8)(MM(abs_epi8)(pdata), MM(set1_epi8)(15));
@@ -1092,87 +1090,82 @@ static FORCE_INLINE void AddApproxCost(MIVEC &total, MIVEC pdata,
   auto cost_mask = MMSI(and)(maskv, cost);
   total = MM(add_epi64)(total, MM(sad_epu8)(cost, cost_mask));
 }
-#endif
 
 static uint8_t
 SelectPredictor(size_t bytes_per_line, const unsigned char *current_row_buf,
                 const unsigned char *top_buf, const unsigned char *left_buf,
                 const unsigned char *topleft_buf, unsigned char *paeth_data,
-                const HuffmanTable &table) {
-#ifdef FPNGE_FIXED_PREDICTOR
-  (void)bytes_per_line;
-  (void)current_row_buf;
-  (void)top_buf;
-  (void)left_buf;
-  (void)topleft_buf;
-  (void)paeth_data;
-  (void)table;
-  return FPNGE_FIXED_PREDICTOR;
-#elif defined(FPNGE_APPROX_PREDICTOR)
-  auto bit_costs = BCAST128(_mm_load_si128((__m128i *)(table.approx_nbits)));
-  size_t i = 0;
-  auto cost1 = MMSI(setzero)();
-  auto cost2 = MMSI(setzero)();
-  auto cost3 = MMSI(setzero)();
-  auto cost4 = MMSI(setzero)();
-  MIVEC pdata;
-
-  for (; i + SIMD_WIDTH <= bytes_per_line; i += SIMD_WIDTH) {
-    pdata = PredictVec<1>(current_row_buf + i, top_buf + i, left_buf + i,
-                          topleft_buf + i);
-    AddApproxCost(cost1, pdata, bit_costs);
-
-    pdata = PredictVec<2>(current_row_buf + i, top_buf + i, left_buf + i,
-                          topleft_buf + i);
-    AddApproxCost(cost2, pdata, bit_costs);
-
-    pdata = PredictVec<3>(current_row_buf + i, top_buf + i, left_buf + i,
-                          topleft_buf + i);
-    AddApproxCost(cost3, pdata, bit_costs);
-
-    pdata = PredictVec<4>(current_row_buf + i, top_buf + i, left_buf + i,
-                          topleft_buf + i);
-    AddApproxCost(cost4, pdata, bit_costs);
-    MMSI(store)((MIVEC *)(paeth_data + i), pdata);
+                const HuffmanTable &table, const struct FPNGEOptions *options) {
+  if (options->predictor <= 4) {
+    return options->predictor;
   }
+  if (options->predictor == FPNGE_PREDICTOR_APPROX) {
+    auto bit_costs = BCAST128(_mm_load_si128((__m128i *)(table.approx_nbits)));
+    size_t i = 0;
+    auto cost1 = MMSI(setzero)();
+    auto cost2 = MMSI(setzero)();
+    auto cost3 = MMSI(setzero)();
+    auto cost4 = MMSI(setzero)();
+    MIVEC pdata;
 
-  size_t bytes_remaining =
-      bytes_per_line ^ i; // equivalent to `bytes_per_line - i`
-  if (bytes_remaining) {
-    auto maskv = MMSI(loadu)((MIVEC *)(kMaskVec - bytes_remaining));
+    for (; i + SIMD_WIDTH <= bytes_per_line; i += SIMD_WIDTH) {
+      pdata = PredictVec<1>(current_row_buf + i, top_buf + i, left_buf + i,
+                            topleft_buf + i);
+      AddApproxCost(cost1, pdata, bit_costs);
 
-    pdata = PredictVec<1>(current_row_buf + i, top_buf + i, left_buf + i,
-                          topleft_buf + i);
-    AddApproxCost(cost1, pdata, bit_costs, maskv);
+      pdata = PredictVec<2>(current_row_buf + i, top_buf + i, left_buf + i,
+                            topleft_buf + i);
+      AddApproxCost(cost2, pdata, bit_costs);
 
-    pdata = PredictVec<2>(current_row_buf + i, top_buf + i, left_buf + i,
-                          topleft_buf + i);
-    AddApproxCost(cost2, pdata, bit_costs, maskv);
+      pdata = PredictVec<3>(current_row_buf + i, top_buf + i, left_buf + i,
+                            topleft_buf + i);
+      AddApproxCost(cost3, pdata, bit_costs);
 
-    pdata = PredictVec<3>(current_row_buf + i, top_buf + i, left_buf + i,
-                          topleft_buf + i);
-    AddApproxCost(cost3, pdata, bit_costs, maskv);
-
-    pdata = PredictVec<4>(current_row_buf + i, top_buf + i, left_buf + i,
-                          topleft_buf + i);
-    AddApproxCost(cost4, pdata, bit_costs, maskv);
-    MMSI(store)((MIVEC *)(paeth_data + i), pdata);
-  }
-
-  uint8_t predictor = 1;
-  size_t best_cost = hadd(cost1);
-  auto test_cost = [&](MIVEC costv, uint8_t pred) {
-    size_t cost = hadd(costv);
-    if (cost < best_cost) {
-      best_cost = cost;
-      predictor = pred;
+      pdata = PredictVec<4>(current_row_buf + i, top_buf + i, left_buf + i,
+                            topleft_buf + i);
+      AddApproxCost(cost4, pdata, bit_costs);
+      MMSI(store)((MIVEC *)(paeth_data + i), pdata);
     }
-  };
-  test_cost(cost2, 2);
-  test_cost(cost3, 3);
-  test_cost(cost4, 4);
-  return predictor;
-#else
+
+    size_t bytes_remaining =
+        bytes_per_line ^ i; // equivalent to `bytes_per_line - i`
+    if (bytes_remaining) {
+      auto maskv = MMSI(loadu)((MIVEC *)(kMaskVec - bytes_remaining));
+
+      pdata = PredictVec<1>(current_row_buf + i, top_buf + i, left_buf + i,
+                            topleft_buf + i);
+      AddApproxCost(cost1, pdata, bit_costs, maskv);
+
+      pdata = PredictVec<2>(current_row_buf + i, top_buf + i, left_buf + i,
+                            topleft_buf + i);
+      AddApproxCost(cost2, pdata, bit_costs, maskv);
+
+      pdata = PredictVec<3>(current_row_buf + i, top_buf + i, left_buf + i,
+                            topleft_buf + i);
+      AddApproxCost(cost3, pdata, bit_costs, maskv);
+
+      pdata = PredictVec<4>(current_row_buf + i, top_buf + i, left_buf + i,
+                            topleft_buf + i);
+      AddApproxCost(cost4, pdata, bit_costs, maskv);
+      MMSI(store)((MIVEC *)(paeth_data + i), pdata);
+    }
+
+    uint8_t predictor = 1;
+    size_t best_cost = hadd(cost1);
+    auto test_cost = [&](MIVEC costv, uint8_t pred) {
+      size_t cost = hadd(costv);
+      if (cost < best_cost) {
+        best_cost = cost;
+        predictor = pred;
+      }
+    };
+    test_cost(cost2, 2);
+    test_cost(cost3, 3);
+    test_cost(cost4, 4);
+    return predictor;
+  }
+
+  assert(options->predictor == FPNGE_PREDICTOR_BEST);
   uint8_t predictor;
   size_t best_cost = ~0U;
   TryPredictor<1, /*store_pred=*/false>(bytes_per_line, current_row_buf,
@@ -1188,7 +1181,6 @@ SelectPredictor(size_t bytes_per_line, const unsigned char *current_row_buf,
                                        left_buf, topleft_buf, paeth_data, table,
                                        best_cost, predictor);
   return predictor;
-#endif
 }
 
 static void
@@ -1196,9 +1188,10 @@ EncodeOneRow(size_t bytes_per_line, const unsigned char *current_row_buf,
              const unsigned char *top_buf, const unsigned char *left_buf,
              const unsigned char *topleft_buf, unsigned char *paeth_data,
              const HuffmanTable &table, uint32_t &s1, uint32_t &s2,
-             BitWriter *__restrict writer) {
-  uint8_t predictor = SelectPredictor(bytes_per_line, current_row_buf, top_buf,
-                                      left_buf, topleft_buf, paeth_data, table);
+             BitWriter *__restrict writer, const struct FPNGEOptions *options) {
+  uint8_t predictor =
+      SelectPredictor(bytes_per_line, current_row_buf, top_buf, left_buf,
+                      topleft_buf, paeth_data, table, options);
 
   writer->Write(table.first16_nbits[predictor], table.first16_bits[predictor]);
   UpdateAdler32(s1, s2, predictor);
@@ -1322,9 +1315,14 @@ EncodeOneRow(size_t bytes_per_line, const unsigned char *current_row_buf,
     });
   };
 
-  ProcessRow(predictor, bytes_per_line, current_row_buf, top_buf, left_buf,
-             topleft_buf, paeth_data, encode_chunk_cb, adler_chunk_cb,
-             encode_rle_cb);
+  if (options->predictor > 4 && predictor == 4) {
+    // re-use Paeth data
+    ProcessRow<0>(bytes_per_line, paeth_data, nullptr, nullptr, nullptr,
+                  encode_chunk_cb, adler_chunk_cb, encode_rle_cb);
+  } else {
+    ProcessRow(predictor, bytes_per_line, current_row_buf, top_buf, left_buf,
+               topleft_buf, encode_chunk_cb, adler_chunk_cb, encode_rle_cb);
+  }
 
   flush_adler();
 }
@@ -1333,7 +1331,8 @@ static void
 CollectSymbolCounts(size_t bytes_per_line, const unsigned char *current_row_buf,
                     const unsigned char *top_buf, const unsigned char *left_buf,
                     const unsigned char *topleft_buf, unsigned char *paeth_data,
-                    uint64_t *__restrict symbol_counts) {
+                    uint64_t *__restrict symbol_counts,
+                    const struct FPNGEOptions *options) {
 
   auto encode_chunk_cb = [&](const MIVEC pdata, const size_t bytes_in_vec) {
     alignas(SIMD_WIDTH) uint8_t predicted_data[SIMD_WIDTH];
@@ -1373,25 +1372,25 @@ CollectSymbolCounts(size_t bytes_per_line, const unsigned char *current_row_buf,
     });
   };
 
-  (void)paeth_data;
-#ifdef FPNGE_FIXED_PREDICTOR
-  ProcessRow<FPNGE_FIXED_PREDICTOR>(bytes_per_line, current_row_buf, top_buf,
-                                    left_buf, topleft_buf, encode_chunk_cb,
-                                    adler_chunk_cb, encode_rle_cb);
-#elif defined(FPNGE_APPROX_PREDICTOR)
-  // filter selection here seems to be slightly more effective when using the
-  // approximate selector; more investigation is probably warranted
-  HuffmanTable dummy_table;
-  uint8_t predictor =
-      SelectPredictor(bytes_per_line, current_row_buf, top_buf, left_buf,
-                      topleft_buf, paeth_data, dummy_table);
-  ProcessRow(predictor, bytes_per_line, current_row_buf, top_buf, left_buf,
-             topleft_buf, paeth_data, encode_chunk_cb, adler_chunk_cb,
-             encode_rle_cb);
-#else
-  ProcessRow<4>(bytes_per_line, current_row_buf, top_buf, left_buf, topleft_buf,
-                encode_chunk_cb, adler_chunk_cb, encode_rle_cb);
-#endif
+  if (options->predictor == FPNGE_PREDICTOR_APPROX) {
+    // filter selection here seems to be slightly more effective when using the
+    // approximate selector; more investigation is probably warranted
+    HuffmanTable dummy_table;
+    uint8_t predictor =
+        SelectPredictor(bytes_per_line, current_row_buf, top_buf, left_buf,
+                        topleft_buf, paeth_data, dummy_table, options);
+    if (predictor == 4) {
+      ProcessRow<0>(bytes_per_line, paeth_data, nullptr, nullptr, nullptr,
+                    encode_chunk_cb, adler_chunk_cb, encode_rle_cb);
+    } else {
+      ProcessRow(predictor, bytes_per_line, current_row_buf, top_buf, left_buf,
+                 topleft_buf, encode_chunk_cb, adler_chunk_cb, encode_rle_cb);
+    }
+  } else {
+    uint8_t predictor = options->predictor > 4 ? 4 : options->predictor;
+    ProcessRow(predictor, bytes_per_line, current_row_buf, top_buf, left_buf,
+               topleft_buf, encode_chunk_cb, adler_chunk_cb, encode_rle_cb);
+  }
 }
 
 static void AppendBE32(size_t value, BitWriter *__restrict writer) {
@@ -1431,7 +1430,8 @@ static void WriteHeader(size_t width, size_t height, size_t bytes_per_channel,
 
 extern "C" size_t FPNGEEncode(size_t bytes_per_channel, size_t num_channels,
                               const void *data, size_t width, size_t row_stride,
-                              size_t height, void *output) {
+                              size_t height, void *output,
+                              const struct FPNGEOptions *options) {
   assert(bytes_per_channel == 1 || bytes_per_channel == 2);
   assert(num_channels != 0 && num_channels <= 4);
   size_t bytes_per_line = bytes_per_channel * num_channels * width;
@@ -1451,16 +1451,22 @@ extern "C" size_t FPNGEEncode(size_t bytes_per_channel, size_t num_channels,
                          ? (SIMD_WIDTH - (intptr_t)aligned_buf_ptr % SIMD_WIDTH)
                          : 0;
 
-#ifndef FPNGE_FIXED_PREDICTOR
   std::vector<unsigned char> pdata_buf(bytes_per_line_buf + SIMD_WIDTH - 1);
   unsigned char *aligned_pdata_ptr = pdata_buf.data();
   aligned_pdata_ptr +=
       (intptr_t)aligned_pdata_ptr % SIMD_WIDTH
           ? (SIMD_WIDTH - (intptr_t)aligned_pdata_ptr % SIMD_WIDTH)
           : 0;
-#else
-  unsigned char *aligned_pdata_ptr = nullptr;
-#endif
+
+  struct FPNGEOptions default_options;
+  if (options == nullptr) {
+    FPNGEFillOptions(&default_options, FPNGE_COMPRESS_LEVEL_DEFAULT);
+    options = &default_options;
+  }
+
+  // options sanity check
+  assert(options->predictor >= 0 && options->predictor <= FPNGE_PREDICTOR_BEST);
+  assert(options->huffman_sample >= 0 && options->huffman_sample <= 127);
 
   BitWriter writer;
   writer.data = static_cast<unsigned char *>(output);
@@ -1478,9 +1484,12 @@ extern "C" size_t FPNGEEncode(size_t bytes_per_channel, size_t num_channels,
 
   uint64_t symbol_counts[286] = {};
 
-  // Sample ~1.5% of the rows in the center of the image.
-  size_t y0 = height * 126 / 256;
-  size_t y1 = height * 130 / 256;
+  // Sample rows in the center of the image.
+  size_t y0 = height * (127 - options->huffman_sample) / 256;
+  size_t y1 = height * (129 + options->huffman_sample) / 256;
+  if (y1 == 0 && height > 0) { // for 1 pixel high images
+    y1 = 1;
+  }
 
   for (size_t y = y0; y < y1; y++) {
     const unsigned char *current_row_in =
@@ -1495,12 +1504,12 @@ extern "C" size_t FPNGEEncode(size_t bytes_per_channel, size_t num_channels,
         top_buf - bytes_per_channel * num_channels;
 
     memcpy(current_row_buf, current_row_in, bytes_per_line);
-    if (y == y0) {
+    if (y == y0 && y != 0) {
       continue;
     }
 
     CollectSymbolCounts(bytes_per_line, current_row_buf, top_buf, left_buf,
-                        topleft_buf, aligned_pdata_ptr, symbol_counts);
+                        topleft_buf, aligned_pdata_ptr, symbol_counts, options);
   }
 
   memset(buf.data(), 0, buf.size());
@@ -1529,8 +1538,8 @@ extern "C" size_t FPNGEEncode(size_t bytes_per_channel, size_t num_channels,
     memcpy(current_row_buf, current_row_in, bytes_per_line);
 
     EncodeOneRow(bytes_per_line, current_row_buf, top_buf, left_buf,
-                 topleft_buf, aligned_pdata_ptr, huffman_table, s1, s2,
-                 &writer);
+                 topleft_buf, aligned_pdata_ptr, huffman_table, s1, s2, &writer,
+                 options);
 
     crc_pos +=
         crc.update(writer.data + crc_pos, writer.bytes_written - crc_pos);
