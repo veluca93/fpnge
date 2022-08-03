@@ -19,9 +19,17 @@
 extern "C" {
 #endif
 
+enum FPNGEOptionsPredictor {
+  FPNGE_PREDICTOR_FIXED_NOOP,
+  FPNGE_PREDICTOR_FIXED_SUB,
+  FPNGE_PREDICTOR_FIXED_TOP,
+  FPNGE_PREDICTOR_FIXED_AVG,
+  FPNGE_PREDICTOR_FIXED_PAETH,
+  FPNGE_PREDICTOR_APPROX,
+  FPNGE_PREDICTOR_BEST
+};
 struct FPNGEOptions {
-  char predictor; // 0-4: fixed predictor, 5: fast predictor selection, 6: slow
-                  // predictor selection
+  char predictor;      // FPNGEOptionsPredictor
   char huffman_sample; // 0-127: how much of the image to sample
 };
 

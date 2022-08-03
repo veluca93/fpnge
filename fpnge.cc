@@ -67,7 +67,8 @@
 #define INT2VEC(v) _mm256_castsi128_si256(_mm_cvtsi32_si128(v))
 #else
 // _mm256_insert_epi32 is unavailable on MSVC 19.0, so prefer the following
-#define INT2VEC(v) _mm256_inserti128_si256(_mm256_setzero_si256(), _mm_cvtsi32_si128(v), 0);
+#define INT2VEC(v)                                                             \
+  _mm256_inserti128_si256(_mm256_setzero_si256(), _mm_cvtsi32_si128(v), 0);
 #endif
 #define SIMD_WIDTH 32
 #define SIMD_MASK 0xffffffffU
@@ -744,7 +745,7 @@ ProcessRow(uint8_t predictor, size_t bytes_per_line,
   } else if (predictor == 3) {
     ProcessRow<3>(bytes_per_line, current_row_buf, top_buf, left_buf,
                   topleft_buf, cb, cb_adl, cb_rle);
-  } else if(predictor == 4) {
+  } else if (predictor == 4) {
     ProcessRow<4>(bytes_per_line, current_row_buf, top_buf, left_buf,
                   topleft_buf, cb, cb_adl, cb_rle);
   } else {
@@ -1098,7 +1099,7 @@ SelectPredictor(size_t bytes_per_line, const unsigned char *current_row_buf,
   if (options->predictor <= 4) {
     return options->predictor;
   }
-  if (options->predictor == 5) {
+  if (options->predictor == FPNGE_PREDICTOR_APPROX) {
     auto bit_costs = BCAST128(_mm_load_si128((__m128i *)(table.approx_nbits)));
     size_t i = 0;
     auto cost1 = MMSI(setzero)();
@@ -1164,7 +1165,7 @@ SelectPredictor(size_t bytes_per_line, const unsigned char *current_row_buf,
     return predictor;
   }
 
-  assert(options->predictor == 6);
+  assert(options->predictor == FPNGE_PREDICTOR_BEST);
   uint8_t predictor;
   size_t best_cost = ~0U;
   TryPredictor<1, /*store_pred=*/false>(bytes_per_line, current_row_buf,
@@ -1371,7 +1372,7 @@ CollectSymbolCounts(size_t bytes_per_line, const unsigned char *current_row_buf,
     });
   };
 
-  if (options->predictor == 5) {
+  if (options->predictor == FPNGE_PREDICTOR_APPROX) {
     // filter selection here seems to be slightly more effective when using the
     // approximate selector; more investigation is probably warranted
     HuffmanTable dummy_table;
@@ -1464,7 +1465,7 @@ extern "C" size_t FPNGEEncode(size_t bytes_per_channel, size_t num_channels,
   }
 
   // options sanity check
-  assert(options->predictor >= 0 && options->predictor <= 6);
+  assert(options->predictor >= 0 && options->predictor <= FPNGE_PREDICTOR_BEST);
   assert(options->huffman_sample >= 0 && options->huffman_sample <= 127);
 
   BitWriter writer;
