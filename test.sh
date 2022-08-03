@@ -21,28 +21,16 @@ run_default() {
   ./build/fpnge "$@"
 }
 
-prepare_approxpred() {
-  ./build.sh -DFPNGE_APPROX_PREDICTOR=1
-}
-
 run_approxpred() {
-  ./build/fpnge "$@"
-}
-
-prepare_fast() {
-  ./build.sh -DFPNGE_FIXED_PREDICTOR=4
+  ./build/fpnge -3 "$@"
 }
 
 run_fast() {
-  ./build/fpnge "$@"
-}
-
-prepare_superfast() {
-  ./build.sh -DFPNGE_FIXED_PREDICTOR=2
+  ./build/fpnge -2 "$@"
 }
 
 run_superfast() {
-  ./build/fpnge "$@"
+  ./build/fpnge -1 "$@"
 }
 
 FAILURES=0
@@ -62,12 +50,15 @@ run_testcase() {
 }
 
 
-for SETTING in default approxpred fast superfast
+for BUILD in default
 do
-  prepare_$SETTING
-  for FILE in testdata/terminal.png $(find jxl_testdata -name '*.png')
+  prepare_$BUILD
+  for SETTING in default approxpred fast superfast
   do
-    run_testcase $SETTING $FILE
+    for FILE in testdata/terminal.png $(find jxl_testdata -name '*.png')
+    do
+      run_testcase $SETTING $FILE
+    done
   done
 done
 

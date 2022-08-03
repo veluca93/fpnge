@@ -22,15 +22,44 @@
 #include "fpnge.h"
 #include "lodepng.h"
 
+static int print_usage(const char *app) {
+  fprintf(stderr, "Usage: %s [options] in.png out.png\n", app);
+  fprintf(stderr, "  -1..%d  compression level (default %d)\n",
+          FPNGE_COMPRESS_LEVEL_BEST, FPNGE_COMPRESS_LEVEL_DEFAULT);
+  fprintf(stderr, "  -r<n>  run <n> repetitions and report\n");
+  return 1;
+}
+
 int main(int argc, char **argv) {
   if (argc < 3) {
-    fprintf(stderr, "Usage: %s in.png out.png [num_reps]\n", argv[0]);
-    return 1;
+    return print_usage(argv[0]);
   }
 
-  const char *in = argv[1];
-  const char *out = argv[2];
-  size_t num_reps = argc >= 4 ? atoi(argv[3]) : 0;
+  int comp_level = FPNGE_COMPRESS_LEVEL_DEFAULT;
+  size_t num_reps = 0;
+
+  int arg_p = 1;
+  for (; arg_p < argc; arg_p++) {
+    if (argv[arg_p][0] != '-')
+      break;
+    char opt = argv[arg_p][1];
+    if (opt >= '1' && opt <= '0' + FPNGE_COMPRESS_LEVEL_BEST) {
+      comp_level = opt - '0';
+    } else if (opt == 'r') {
+      num_reps = atoi(argv[arg_p] + 2);
+    } else {
+      return print_usage(argv[0]);
+    }
+  }
+
+  if (arg_p + 2 != argc) {
+    return print_usage(argv[0]);
+  }
+
+  const char *in = argv[arg_p];
+  const char *out = argv[arg_p + 1];
+  struct FPNGEOptions options;
+  FPNGEFillOptions(&options, comp_level);
 
   FILE *infile = fopen(in, "rb");
   if (!infile) {
@@ -96,9 +125,9 @@ int main(int argc, char **argv) {
   if (num_reps > 0) {
     auto start = std::chrono::high_resolution_clock::now();
     for (size_t _ = 0; _ < num_reps; _++) {
-      encoded_size =
-          FPNGEEncode(bytes_per_channel, num_c, png, width,
-                      width * num_c * bytes_per_channel, height, encoded);
+      encoded_size = FPNGEEncode(bytes_per_channel, num_c, png, width,
+                                 width * num_c * bytes_per_channel, height,
+                                 encoded, &options);
     }
     auto stop = std::chrono::high_resolution_clock::now();
     float us =
@@ -110,9 +139,9 @@ int main(int argc, char **argv) {
     fprintf(stderr, "%10.3f bits/pixel\n",
             encoded_size * 8.0 / float(width) / float(height));
   } else {
-    encoded_size =
-        FPNGEEncode(bytes_per_channel, num_c, png, width,
-                    width * num_c * bytes_per_channel, height, encoded);
+    encoded_size = FPNGEEncode(bytes_per_channel, num_c, png, width,
+                               width * num_c * bytes_per_channel, height,
+                               encoded, &options);
   }
 
   FILE *o = fopen(out, "wb");
