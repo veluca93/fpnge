@@ -735,10 +735,7 @@ ProcessRow(uint8_t predictor, size_t bytes_per_line,
            const unsigned char *current_row_buf, const unsigned char *top_buf,
            const unsigned char *left_buf, const unsigned char *topleft_buf,
            CB &&cb, CB_ADL &&cb_adl, CB_RLE &&cb_rle) {
-  if (predictor == 0) {
-    ProcessRow<0>(bytes_per_line, current_row_buf, top_buf, left_buf,
-                  topleft_buf, cb, cb_adl, cb_rle);
-  } else if (predictor == 1) {
+  if (predictor == 1) {
     ProcessRow<1>(bytes_per_line, current_row_buf, top_buf, left_buf,
                   topleft_buf, cb, cb_adl, cb_rle);
   } else if (predictor == 2) {
@@ -747,9 +744,12 @@ ProcessRow(uint8_t predictor, size_t bytes_per_line,
   } else if (predictor == 3) {
     ProcessRow<3>(bytes_per_line, current_row_buf, top_buf, left_buf,
                   topleft_buf, cb, cb_adl, cb_rle);
-  } else {
-    assert(predictor == 4);
+  } else if(predictor == 4) {
     ProcessRow<4>(bytes_per_line, current_row_buf, top_buf, left_buf,
+                  topleft_buf, cb, cb_adl, cb_rle);
+  } else {
+    assert(predictor == 0);
+    ProcessRow<0>(bytes_per_line, current_row_buf, top_buf, left_buf,
                   topleft_buf, cb, cb_adl, cb_rle);
   }
 }
