@@ -19,6 +19,8 @@
 extern "C" {
 #endif
 
+enum FPNGECicpColorspace { FPNGE_CICP_NONE, FPNGE_CICP_PQ };
+
 enum FPNGEOptionsPredictor {
   FPNGE_PREDICTOR_FIXED_NOOP,
   FPNGE_PREDICTOR_FIXED_SUB,
@@ -29,15 +31,18 @@ enum FPNGEOptionsPredictor {
   FPNGE_PREDICTOR_BEST
 };
 struct FPNGEOptions {
-  char predictor;      // FPNGEOptionsPredictor
-  char huffman_sample; // 0-127: how much of the image to sample
+  char predictor;       // FPNGEOptionsPredictor
+  char huffman_sample;  // 0-127: how much of the image to sample
+  char cicp_colorspace; // FPNGECicpColorspace
 };
 
 #define FPNGE_COMPRESS_LEVEL_DEFAULT 4
 #define FPNGE_COMPRESS_LEVEL_BEST 5
-inline void FPNGEFillOptions(struct FPNGEOptions *options, int level) {
+inline void FPNGEFillOptions(struct FPNGEOptions *options, int level,
+                             int cicp_colorspace) {
   if (level == 0)
     level = FPNGE_COMPRESS_LEVEL_DEFAULT;
+  options->cicp_colorspace = cicp_colorspace;
   options->huffman_sample = 1;
   switch (level) {
   case 1:

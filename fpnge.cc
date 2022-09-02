@@ -1401,7 +1401,8 @@ static void AppendBE32(size_t value, BitWriter *__restrict writer) {
 }
 
 static void WriteHeader(size_t width, size_t height, size_t bytes_per_channel,
-                        size_t num_channels, BitWriter *__restrict writer) {
+                        size_t num_channels, char cicp_colorspace,
+                        BitWriter *__restrict writer) {
   constexpr uint8_t kPNGHeader[8] = {137, 80, 78, 71, 13, 10, 26, 10};
   for (size_t i = 0; i < 8; i++) {
     writer->Write(8, kPNGHeader[i]);
@@ -1426,6 +1427,13 @@ static void WriteHeader(size_t width, size_t height, size_t bytes_per_channel,
   uint32_t crc =
       Crc32().update_final(writer->data + crc_start, crc_end - crc_start);
   AppendBE32(crc, writer);
+
+  if (cicp_colorspace == FPNGE_CICP_PQ) {
+    writer->Write(32, 0x04000000);
+    writer->Write(32, 0x50434963); // cICP
+    writer->Write(32, 0x01001009); // PQ, Rec2020
+    writer->Write(32, 0xfe23234d); // CRC
+  }
 }
 
 extern "C" size_t FPNGEEncode(size_t bytes_per_channel, size_t num_channels,
@@ -1460,7 +1468,8 @@ extern "C" size_t FPNGEEncode(size_t bytes_per_channel, size_t num_channels,
 
   struct FPNGEOptions default_options;
   if (options == nullptr) {
-    FPNGEFillOptions(&default_options, FPNGE_COMPRESS_LEVEL_DEFAULT);
+    FPNGEFillOptions(&default_options, FPNGE_COMPRESS_LEVEL_DEFAULT,
+                     FPNGE_CICP_NONE);
     options = &default_options;
   }
 
@@ -1471,7 +1480,8 @@ extern "C" size_t FPNGEEncode(size_t bytes_per_channel, size_t num_channels,
   BitWriter writer;
   writer.data = static_cast<unsigned char *>(output);
 
-  WriteHeader(width, height, bytes_per_channel, num_channels, &writer);
+  WriteHeader(width, height, bytes_per_channel, num_channels,
+              options->cicp_colorspace, &writer);
 
   assert(writer.bits_in_buffer == 0);
   size_t chunk_length_pos = writer.bytes_written;

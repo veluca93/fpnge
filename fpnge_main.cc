@@ -27,6 +27,8 @@ static int print_usage(const char *app) {
   fprintf(stderr, "  -1..%d  compression level (default %d)\n",
           FPNGE_COMPRESS_LEVEL_BEST, FPNGE_COMPRESS_LEVEL_DEFAULT);
   fprintf(stderr, "  -r<n>  run <n> repetitions and report\n");
+  fprintf(stderr, "  -pq    reinterpret input pixels as PQ and add a cICP "
+                  "chunk; can be used to make HDR PNGs\n");
   return 1;
 }
 
@@ -37,6 +39,7 @@ int main(int argc, char **argv) {
 
   int comp_level = FPNGE_COMPRESS_LEVEL_DEFAULT;
   size_t num_reps = 0;
+  int cicp_colorspace = FPNGE_CICP_NONE;
 
   int arg_p = 1;
   for (; arg_p < argc; arg_p++) {
@@ -47,6 +50,8 @@ int main(int argc, char **argv) {
       comp_level = opt - '0';
     } else if (opt == 'r') {
       num_reps = atoi(argv[arg_p] + 2);
+    } else if (opt == 'p' && argv[arg_p][2] == 'q') {
+      cicp_colorspace = FPNGE_CICP_PQ;
     } else {
       return print_usage(argv[0]);
     }
@@ -59,7 +64,7 @@ int main(int argc, char **argv) {
   const char *in = argv[arg_p];
   const char *out = argv[arg_p + 1];
   struct FPNGEOptions options;
-  FPNGEFillOptions(&options, comp_level);
+  FPNGEFillOptions(&options, comp_level, cicp_colorspace);
 
   FILE *infile = fopen(in, "rb");
   if (!infile) {
