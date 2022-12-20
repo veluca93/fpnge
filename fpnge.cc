@@ -214,13 +214,13 @@ struct HuffmanTable {
     }
     for (size_t i = 0; i < 14; i++) {
       collapsed_data[16 + i] = 1;
-      collapsed_min_limit[16 + i] = 8 * 0;
+      collapsed_min_limit[16 + i] = 8;
     }
     for (size_t j = 0; j < 16; j++) {
       collapsed_data[16 + 14 + j] += data[240 + j];
     }
     collapsed_data[16 + 14 + 16] = 1;
-    collapsed_min_limit[16 + 14 + 16] = 8 * 0;
+    collapsed_min_limit[16 + 14 + 16] = 8;
     collapsed_data[16 + 14 + 16 + 1] = data[285];
 
     uint8_t collapsed_nbits[48] = {};
