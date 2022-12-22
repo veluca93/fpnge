@@ -401,7 +401,9 @@ static void WriteHuffmanCode(const HuffmanTable &table,
 }
 
 #ifdef __PCLMUL__
+} // namespace
 #include <wmmintrin.h>
+namespace {
 alignas(32) static const uint8_t pshufb_shf_table[] = {
     0x80, 0x81, 0x82, 0x83, 0x84, 0x85, 0x86, 0x87, 0x88, 0x89, 0x8a,
     0x8b, 0x8c, 0x8d, 0x8e, 0x8f, 0x00, 0x01, 0x02, 0x03, 0x04, 0x05,
@@ -524,10 +526,11 @@ public:
   }
 };
 #else
-
+} // namespace
 #include <array>
 #include <cstddef>
 #include <utility>
+namespace {
 // from https://joelfilho.com/blog/2020/compile_time_lookup_tables_in_cpp/
 template <std::size_t Length, typename Generator, std::size_t... Indexes>
 constexpr auto lut_impl(Generator &&f, std::index_sequence<Indexes...>) {
