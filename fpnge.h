@@ -31,35 +31,34 @@ enum FPNGEOptionsPredictor {
   FPNGE_PREDICTOR_BEST
 };
 struct FPNGEOptions {
-  char predictor;       // FPNGEOptionsPredictor
-  char huffman_sample;  // 0-127: how much of the image to sample
-  char cicp_colorspace; // FPNGECicpColorspace
+  char predictor;        // FPNGEOptionsPredictor
+  char huffman_sample;   // 0-127: how much of the image to sample
+  char cicp_colorspace;  // FPNGECicpColorspace
 };
 
 #define FPNGE_COMPRESS_LEVEL_DEFAULT 4
 #define FPNGE_COMPRESS_LEVEL_BEST 5
 inline void FPNGEFillOptions(struct FPNGEOptions *options, int level,
                              int cicp_colorspace) {
-  if (level == 0)
-    level = FPNGE_COMPRESS_LEVEL_DEFAULT;
+  if (level == 0) level = FPNGE_COMPRESS_LEVEL_DEFAULT;
   options->cicp_colorspace = cicp_colorspace;
   options->huffman_sample = 1;
   switch (level) {
-  case 1:
-    options->predictor = 2;
-    break;
-  case 2:
-    options->predictor = 4;
-    break;
-  case 3:
-    options->predictor = 5;
-    break;
-  case 5:
-    options->huffman_sample = 23;
-    // fall through
-  default:
-    options->predictor = 6;
-    break;
+    case 1:
+      options->predictor = 2;
+      break;
+    case 2:
+      options->predictor = 4;
+      break;
+    case 3:
+      options->predictor = 5;
+      break;
+    case 5:
+      options->huffman_sample = 23;
+      // fall through
+    default:
+      options->predictor = 6;
+      break;
   }
 }
 
@@ -74,7 +73,7 @@ inline size_t FPNGEOutputAllocSize(size_t bytes_per_channel,
                                    size_t num_channels, size_t width,
                                    size_t height) {
   // likely an overestimate
-  return 1024 + 2 * bytes_per_channel * num_channels * width * height;
+  return 1024 + (2 * bytes_per_channel * width * num_channels + 1) * height;
 }
 
 #ifdef __cplusplus
