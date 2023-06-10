@@ -1439,9 +1439,45 @@ static void WriteHeader(size_t width, size_t height, size_t bytes_per_channel,
     writer->Write(32, 0x01001009); // PQ, Rec2020
     writer->Write(32, 0xfe23234d); // CRC
   }
+
+  {
+    // tRNS
+    uint16_t trns[3] = {128, 128, 128};
+    // Length
+    writer->Write(32, 0x06000000);
+    assert(writer->bits_in_buffer == 0);
+    size_t crc_start = writer->bytes_written;
+    writer->Write(32, 0x534E5274);
+    for (size_t i = 0; i < 3; i++) {
+      writer->Write(16, trns[i]);
+    }
+    size_t crc_end = writer->bytes_written;
+    uint32_t crc =
+        Crc32().update_final(writer->data + crc_start, crc_end - crc_start);
+    AppendBE32(crc, writer);
+  }
+
+  {
+    // PLTE
+    uint8_t plte[][3] = {{0, 0, 0}, {128, 128, 128}};
+    // Length
+    AppendBE32(sizeof(plte), writer);
+    assert(writer->bits_in_buffer == 0);
+    size_t crc_start = writer->bytes_written;
+    writer->Write(32, 0x45544C50);
+    for (size_t j = 0; j < sizeof(plte) / 3; j++) {
+      for (size_t i = 0; i < 3; i++) {
+        writer->Write(8, plte[j][i]);
+      }
+    }
+    size_t crc_end = writer->bytes_written;
+    uint32_t crc =
+        Crc32().update_final(writer->data + crc_start, crc_end - crc_start);
+    AppendBE32(crc, writer);
+  }
 }
 
-}  // namespace
+} // namespace
 
 extern "C" size_t FPNGEEncode(size_t bytes_per_channel, size_t num_channels,
                               const void *data, size_t width, size_t row_stride,
