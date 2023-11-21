@@ -22,7 +22,7 @@
 #include <vector>
 
 #if defined(_MSC_VER) && !defined(__clang__)
-#define FORCE_INLINE_LAMBDA [[msvc::forceinline]]
+#define FORCE_INLINE_LAMBDA
 #define FORCE_INLINE __forceinline
 #define __SSE4_1__ 1
 #define __PCLMUL__ 1
