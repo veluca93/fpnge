@@ -30,35 +30,47 @@ enum FPNGEOptionsPredictor {
   FPNGE_PREDICTOR_APPROX,
   FPNGE_PREDICTOR_BEST
 };
+
+struct FPNGEAdditionalChunk {
+  char name[4];
+  const char *data;
+  int data_size;
+};
+
 struct FPNGEOptions {
-  char predictor;        // FPNGEOptionsPredictor
-  char huffman_sample;   // 0-127: how much of the image to sample
-  char cicp_colorspace;  // FPNGECicpColorspace
+  char predictor;       // FPNGEOptionsPredictor
+  char huffman_sample;  // 0-127: how much of the image to sample
+  char cicp_colorspace; // FPNGECicpColorspace
+  int num_additional_chunks;
+  const struct FPNGEAdditionalChunk *additional_chunks;
 };
 
 #define FPNGE_COMPRESS_LEVEL_DEFAULT 4
 #define FPNGE_COMPRESS_LEVEL_BEST 5
 inline void FPNGEFillOptions(struct FPNGEOptions *options, int level,
                              int cicp_colorspace) {
-  if (level == 0) level = FPNGE_COMPRESS_LEVEL_DEFAULT;
+  if (level == 0)
+    level = FPNGE_COMPRESS_LEVEL_DEFAULT;
   options->cicp_colorspace = cicp_colorspace;
   options->huffman_sample = 1;
+  options->num_additional_chunks = 0;
+  options->additional_chunks = NULL;
   switch (level) {
-    case 1:
-      options->predictor = 2;
-      break;
-    case 2:
-      options->predictor = 4;
-      break;
-    case 3:
-      options->predictor = 5;
-      break;
-    case 5:
-      options->huffman_sample = 23;
-      // fall through
-    default:
-      options->predictor = 6;
-      break;
+  case 1:
+    options->predictor = 2;
+    break;
+  case 2:
+    options->predictor = 4;
+    break;
+  case 3:
+    options->predictor = 5;
+    break;
+  case 5:
+    options->huffman_sample = 23;
+    // fall through
+  default:
+    options->predictor = 6;
+    break;
   }
 }
 

@@ -373,6 +373,11 @@ struct BitWriter {
     }
   }
 
+  void WriteBytes(const char *data, size_t count) {
+    memcpy(this->data + bytes_written, data, count);
+    bytes_written += count;
+  }
+
   unsigned char *data;
   size_t bytes_written = 0;
   size_t bits_in_buffer = 0;
@@ -1407,6 +1412,8 @@ static void AppendBE32(size_t value, BitWriter *__restrict writer) {
 
 static void WriteHeader(size_t width, size_t height, size_t bytes_per_channel,
                         size_t num_channels, char cicp_colorspace,
+                        const FPNGEAdditionalChunk *additional_chunks,
+                        int num_additional_chunks,
                         BitWriter *__restrict writer) {
   constexpr uint8_t kPNGHeader[8] = {137, 80, 78, 71, 13, 10, 26, 10};
   for (size_t i = 0; i < 8; i++) {
@@ -1439,9 +1446,22 @@ static void WriteHeader(size_t width, size_t height, size_t bytes_per_channel,
     writer->Write(32, 0x01001009); // PQ, Rec2020
     writer->Write(32, 0xfe23234d); // CRC
   }
+  for (int i = 0; i < num_additional_chunks; i++) {
+    AppendBE32(additional_chunks[i].data_size, writer);
+    size_t crc_start = writer->bytes_written;
+    uint32_t name = 0;
+    memcpy(&name, additional_chunks[i].name, 4);
+    writer->Write(32, name);
+    writer->WriteBytes(additional_chunks[i].data,
+                       additional_chunks[i].data_size);
+    size_t crc_end = writer->bytes_written;
+    uint32_t crc =
+        Crc32().update_final(writer->data + crc_start, crc_end - crc_start);
+    AppendBE32(crc, writer);
+  }
 }
 
-}  // namespace
+} // namespace
 
 extern "C" size_t FPNGEEncode(size_t bytes_per_channel, size_t num_channels,
                               const void *data, size_t width, size_t row_stride,
@@ -1488,7 +1508,8 @@ extern "C" size_t FPNGEEncode(size_t bytes_per_channel, size_t num_channels,
   writer.data = static_cast<unsigned char *>(output);
 
   WriteHeader(width, height, bytes_per_channel, num_channels,
-              options->cicp_colorspace, &writer);
+              options->cicp_colorspace, options->additional_chunks,
+              options->num_additional_chunks, &writer);
 
   assert(writer.bits_in_buffer == 0);
   size_t chunk_length_pos = writer.bytes_written;
