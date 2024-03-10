@@ -31,6 +31,11 @@ enum FPNGEOptionsPredictor {
   FPNGE_PREDICTOR_BEST
 };
 
+enum FPNGEColorChannelOrder {
+  FPNGE_ORDER_RGB,
+  FPNGE_ORDER_BGR,
+};
+
 struct FPNGEAdditionalChunk {
   char name[4];
   const char *data;
@@ -41,6 +46,7 @@ struct FPNGEOptions {
   char predictor;       // FPNGEOptionsPredictor
   char huffman_sample;  // 0-127: how much of the image to sample
   char cicp_colorspace; // FPNGECicpColorspace
+  char channel_order;   // FPNGEColorChannelOrder
   int num_additional_chunks;
   const struct FPNGEAdditionalChunk *additional_chunks;
 };
@@ -55,6 +61,7 @@ inline void FPNGEFillOptions(struct FPNGEOptions *options, int level,
   options->huffman_sample = 1;
   options->num_additional_chunks = 0;
   options->additional_chunks = NULL;
+  options->channel_order = FPNGE_ORDER_RGB;
   switch (level) {
   case 1:
     options->predictor = 2;
