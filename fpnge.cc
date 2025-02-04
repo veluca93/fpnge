@@ -637,48 +637,28 @@ static FORCE_INLINE MIVEC PredictVec(const unsigned char *current_buf,
   } else if (predictor == 3) {
     auto left = MMSI(loadu)((MIVEC *)(left_buf));
     auto top = MMSI(load)((MIVEC *)(top_buf));
-    auto pred = MM(avg_epu8)(top, left);
-    // emulate truncating average
-    pred =
-        MM(sub_epi8)(pred, MMSI(and)(MMSI(xor)(top, left), MM(set1_epi8)(1)));
+    auto pred = MM(sub_epi8)(MM(add_epi8)(top, left), MM(avg_epu8)(top, left));
     return MM(sub_epi8)(data, pred);
   } else {
-    auto a = MMSI(loadu)((MIVEC *)(left_buf));
-    auto b = MMSI(load)((MIVEC *)(top_buf));
+    auto left = MMSI(loadu)((MIVEC *)(left_buf));
+    auto top = MMSI(load)((MIVEC *)(top_buf));
     auto c = MMSI(loadu)((MIVEC *)(topleft_buf));
-    // compute |a-b| via max(a,b)-min(a,b)
-    auto min_bc = MM(min_epu8)(b, c);
-    auto min_ac = MM(min_epu8)(a, c);
-    auto pa = MM(sub_epi8)(MM(max_epu8)(b, c), min_bc);
-    auto pb = MM(sub_epi8)(MM(max_epu8)(a, c), min_ac);
-    // pc = |(b-c) + (a-c)| = |pa-pb|, unless a>c>b or b>c>a, in which case,
-    // pc isn't used
+
+    auto a = MM(min_epu8)(left, top);
+    auto b = MM(max_epu8)(left, top);
+
+    auto pa = MM(subs_epu8)(b, c);
+    auto pb = MM(subs_epu8)(c, a);
+
     auto min_pab = MM(min_epu8)(pa, pb);
     auto pc = MM(sub_epi8)(MM(max_epu8)(pa, pb), min_pab);
-    pc = MMSI(or)(
-        pc, MMSI(xor)(MM(cmpeq_epi8)(min_bc, c), MM(cmpeq_epi8)(min_ac, a)));
 
-    auto use_a = MM(cmpeq_epi8)(MM(min_epu8)(min_pab, pc), pa);
-    auto use_b = MM(cmpeq_epi8)(MM(min_epu8)(pb, pc), pb);
+    auto min_pabc = MM(min_epu8)(min_pab, pc);
+    auto use_a = MM(cmpeq_epi8)(min_pabc, pa);
+    auto use_b = MM(cmpeq_epi8)(min_pabc, pb);
 
     auto pred = MM(blendv_epi8)(MM(blendv_epi8)(c, b, use_b), a, use_a);
     return MM(sub_epi8)(data, pred);
-    /*
-    // Equivalent scalar code:
-    for (size_t ii = 0; ii < 32; ii++) {
-      uint8_t a = left_buf[i + ii];
-      uint8_t b = top_buf[i + ii];
-      uint8_t c = topleft_buf[i + ii];
-      uint8_t bc = b - c;
-      uint8_t ca = c - a;
-      uint8_t pa = c < b ? bc : -bc;
-      uint8_t pb = a < c ? ca : -ca;
-      uint8_t pc = (a < c) == (c < b) ? (bc >= ca ? bc - ca : ca - bc) : 255;
-      uint8_t pred = pa <= pb && pa <= pc ? a : pb <= pc ? b : c;
-      uint8_t data = current_row_buf[i + ii] - pred;
-      predicted_data[ii] = data;
-    }
-    */
   }
 }
 
